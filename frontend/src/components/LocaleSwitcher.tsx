@@ -8,6 +8,10 @@ import { usePathname, useRouter } from '@/i18n/navigation'
 
 const LABELS: Record<string, string> = { en: 'English', es: 'Español' }
 
+// Cookie name used by next-intl middleware to persist locale preference.
+// Must match the cookieName in routing config (defaults to NEXT_LOCALE).
+const LOCALE_COOKIE = 'NEXT_LOCALE'
+
 export function LocaleSwitcher() {
   const locale = useLocale()
   const router = useRouter()
@@ -15,8 +19,15 @@ export function LocaleSwitcher() {
   const [isPending, startTransition] = useTransition()
 
   function onChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const nextLocale = e.target.value
+
+    // Persist preference in a cookie so the middleware can read it on the
+    // next server request and avoid a redirect loop on page reload.
+    // SameSite=Lax is safe here; no Secure flag needed (works on http too).
+    document.cookie = `${LOCALE_COOKIE}=${nextLocale}; path=/; max-age=31536000; SameSite=Lax`
+
     startTransition(() => {
-      router.replace(pathname, { locale: e.target.value })
+      router.replace(pathname, { locale: nextLocale })
     })
   }
 
