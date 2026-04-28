@@ -59,3 +59,11 @@ export function setCookieConsent(value: CookieConsentValue): void {
     // ignore storage write errors
   }
 }
+
+export function getConsent(): CookieConsentValue | null {
+  return getCookieConsent()?.value ?? null
+}
+
+export function setConsent(value: CookieConsentValue): void {
+  setCookieConsent(value)
+}
