@@ -109,13 +109,16 @@ function buildCsp(nonce: string): string {
 }
 
 export function middleware(request: NextRequest): NextResponse {
-  // Run next-intl locale routing first (sets locale cookie, redirects if needed)
+  // Run next-intl locale routing first.
+  // This sets the NEXT_LOCALE cookie and handles locale-prefix redirects.
   const intlResponse = intlMiddleware(request)
 
   // crypto.randomUUID() is available in the Edge runtime
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64')
 
-  const response = intlResponse ?? NextResponse.next({
+  // Use the intl response as the base so its Set-Cookie (NEXT_LOCALE) and
+  // any redirect Location headers are preserved.
+  const response: NextResponse = intlResponse ?? NextResponse.next({
     request: {
       headers: new Headers({
         ...Object.fromEntries(request.headers),
@@ -124,7 +127,8 @@ export function middleware(request: NextRequest): NextResponse {
     },
   })
 
-  // Inject nonce into request headers so layout.tsx can read it
+  // Forward the nonce to the layout via a response header that the
+  // server component reads with next/headers.
   response.headers.set('x-nonce', nonce)
 
   response.headers.set(CSP_HEADER, buildCsp(nonce))

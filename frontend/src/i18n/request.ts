@@ -8,10 +8,10 @@ export default getRequestConfig(async ({ requestLocale }) => {
   }
 
   const [common, policy, claims, wallet] = await Promise.all([
-    import(`../messages/${locale}/common.json`),
-    import(`../messages/${locale}/policy.json`),
-    import(`../messages/${locale}/claims.json`),
-    import(`../messages/${locale}/wallet.json`),
+    import(`../../messages/${locale}/common.json`),
+    import(`../../messages/${locale}/policy.json`),
+    import(`../../messages/${locale}/claims.json`),
+    import(`../../messages/${locale}/wallet.json`),
   ])
 
   return {
