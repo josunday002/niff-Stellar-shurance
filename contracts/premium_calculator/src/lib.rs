@@ -185,13 +185,9 @@ mod tests {
         let client = PremiumCalculatorClient::new(&env, &contract_id);
 
         let v = client.version();
-        let v_str = v.to_string();
-        assert!(!v_str.is_empty(), "version() must not be empty");
-        assert_eq!(
-            v_str,
-            env!("CARGO_PKG_VERSION"),
-            "version() must match Cargo.toml"
-        );
+        // Compare soroban_sdk::String against the expected semver string
+        let expected = soroban_sdk::String::from_str(&env, env!("CARGO_PKG_VERSION"));
+        assert_eq!(v, expected, "version() must match Cargo.toml");
     }
 
     #[test]

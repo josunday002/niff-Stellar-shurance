@@ -48,14 +48,15 @@ export class AdminRoleGuard implements CanActivate {
       // Attach identity to request for downstream use
       request.adminIdentity = identity;
       
-      this.logger.debug(`Admin access granted to ${identity.walletAddress} from IP: ${ip}`);
+      this.logger.debug(`Admin access granted to ${identity.staffId} from IP: ${ip}`);
       return true;
     } catch (error) {
       if (error instanceof ForbiddenException) {
         throw error;
       }
-      
-      this.logger.error(`Admin auth guard error: ${error.message}`, error.stack);
+      const msg = error instanceof Error ? error.message : String(error);
+      const stack = error instanceof Error ? error.stack : undefined;
+      this.logger.error(`Admin auth guard error: ${msg}`, stack);
       throw new ForbiddenException('Admin authentication failed');
     }
   }

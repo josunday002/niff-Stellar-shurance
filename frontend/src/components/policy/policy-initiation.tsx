@@ -25,7 +25,7 @@ import { useToast } from '@/components/ui/use-toast'
 import { RampButton } from '@/components/ramp/ramp-button'
 import { getConfig } from '@/config/env'
 import { PolicyAPI, PolicyError, getPolicyErrorMessage, getExplorerUrl } from '@/lib/api/policy'
-import { QuoteAPI, QuoteError, getQuoteErrorMessage } from '@/lib/api/quote'
+import { QuoteError, getQuoteErrorMessage } from '@/lib/api/quote'
 import { PolicyInitiationSchema, PolicyInitiationData, Transaction, Policy } from '@/lib/schemas/policy'
 import type { QuoteResponse } from '@/lib/schemas/quote'
 import { formatTokenAmount } from '@/lib/formatTokenAmount'
@@ -101,28 +101,6 @@ export function PolicyInitiation({ quoteId: propQuoteId }: PolicyInitiationProps
       stepHeadingRef.current.focus()
     }
   }, [currentStep])
-
-  useEffect(() => {
-    if (quoteId) {
-      const loadQuote = async () => {
-        try {
-          const quoteData = await QuoteAPI.getQuoteById(quoteId)
-          setQuote(quoteData)
-          setCurrentStep(1)
-        } catch (error) {
-          if (error instanceof QuoteError) {
-            toast({
-              title: 'Quote Error',
-              description: getQuoteErrorMessage(error),
-              variant: 'destructive'
-            })
-          }
-        }
-      }
-
-      void loadQuote()
-    }
-  }, [quoteId, toast])
 
   useEffect(() => {
     if (!rampEnabled || !showOnRamp) return;

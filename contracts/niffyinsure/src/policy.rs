@@ -1,10 +1,13 @@
 use crate::{
     events, ledger, premium, storage, token,
-    types::{AgeBand, CoverageTier, Policy, PolicyType, PremiumQuote, RegionTier, RiskInput},
+    types::{
+        AgeBand, CoverageTier, CoverageType, Policy, PolicyType, PremiumQuote, RegionTier,
+        RiskInput, STRIKE_DEACTIVATION_THRESHOLD,
+    },
     validate::{self, Error},
 };
 use soroban_sdk::{contracterror, contractevent, contracttype, Address, Env, String};
-pub use ledger::QUOTE_TTL_LEDGERS;
+pub use ledger::{QUOTE_TTL_LEDGERS};
 
 /// Current event schema version.
 pub const POLICY_EVENT_VERSION: u32 = 1;
@@ -236,6 +239,9 @@ pub fn map_quote_error(env: &Env, err: Error) -> QuoteFailure {
         },
         Error::ClaimNotProcessing => {
             "claim is not in Processing status; process_deadline requires Processing"
+        },
+        Error::RollingClaimCapExceeded => {
+            "rolling claim cap exceeded: total paid claims for this policy exceed the configured cap for this window"
         },
     };
     QuoteFailure {
@@ -471,102 +477,6 @@ pub enum RenewalError {
     GracePeriodOutOfBounds = 206,
     /// Renewed coverage is incompatible with stored deductible (see `check_policy`).
     InvalidDeductible = 207,
-}
-
-/// Renew an existing active policy.
-///
-/// Eligible window: `[end - RENEWAL_WINDOW_LEDGERS, end + grace_period_ledgers)`.
-/// Renewal within the grace period succeeds with no coverage gap — the new
-/// term starts at `old_end_ledger + 1`.
-/// Blocked when an open claim exists on the policy (mirrors the open-claim rule).
-pub fn renew_policy(
-    env: &Env,
-    holder: Address,
-    policy_id: u32,
-    age_band: crate::types::AgeBand,
-    coverage_type: CoverageTier,
-    safety_score: u32,
-    base_amount: i128,
-) -> Result<Policy, RenewalError> {
-    storage::assert_bind_not_paused(env);
-    holder.require_auth();
-
-    let mut policy = storage::get_policy(env, &holder, policy_id)
-        .ok_or(RenewalError::NotFound)?;
-
-    if !policy.is_active {
-        return Err(RenewalError::Inactive);
-    }
-
-    // Open-claim guard (mirrors the rule enforced in the backend).
-    if storage::has_open_claim(env, &holder, policy_id) {
-        return Err(RenewalError::OpenClaimBlocking);
-    }
-
-    let now = env.ledger().sequence();
-    let grace = storage::get_grace_period_ledgers(env);
-
-    if !ledger::is_in_renewal_window_with_grace(
-        now,
-        policy.end_ledger,
-        ledger::RENEWAL_WINDOW_LEDGERS,
-        grace,
-    ) {
-        return Err(RenewalError::WindowClosed);
-    }
-
-    // Recalculate premium with the same deterministic formula.
-    let input = RiskInput {
-        region: policy.region.clone(),
-        age_band,
-        coverage: coverage_type,
-        safety_score,
-    };
-    let quote = crate::calculator::compute_quote(
-        env,
-        &input,
-        base_amount,
-        false,
-        ledger::QUOTE_TTL_LEDGERS,
-    )
-    .map_err(|_| RenewalError::PremiumError)?;
-
-    let premium_amount = quote.total_premium;
-    if premium_amount <= 0 {
-        return Err(RenewalError::PremiumError);
-    }
-
-    // Collect premium before any state mutation.
-    token::collect_premium(env, &holder, &policy.asset, premium_amount);
-
-    // New term starts immediately after old end — no gap, no overlap.
-    let new_start = policy.end_ledger.saturating_add(1);
-    let new_end = new_start
-        .checked_add(ledger::POLICY_DURATION_LEDGERS)
-        .ok_or(RenewalError::LedgerOverflow)?;
-
-    policy.start_ledger = new_start;
-    policy.end_ledger = new_end;
-    policy.premium = premium_amount;
-    policy.coverage = base_amount;
-
-    validate::check_policy(&policy).map_err(|e| match e {
-        validate::Error::Overflow => RenewalError::InvalidDeductible,
-        _ => RenewalError::PremiumError,
-    })?;
-
-    storage::set_policy(env, &holder, policy_id, &policy);
-
-    PolicyRenewed {
-        version: POLICY_EVENT_VERSION,
-        policy_id,
-        holder: holder.clone(),
-        premium: premium_amount,
-        new_end_ledger: new_end,
-    }
-    .publish(env);
-
-    Ok(policy)
 }
 
 /// Emit [`PolicyExpired`] if `now >= end_ledger` and we have not yet recorded an event for this term.

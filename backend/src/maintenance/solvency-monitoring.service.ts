@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SorobanService } from '../rpc/soroban.service';
 import { RedisService } from '../cache/redis.service';
+import { MetricsService } from '../metrics/metrics.service';
 import { getRuntimeEnv } from '../config/runtime-env';
 import {
   SOLVENCY_SNAPSHOT_REDIS_KEY,
@@ -154,12 +155,13 @@ export class SolvencyMonitoringService {
     }
 
     const buffer = balance - outstanding;
+    const tenantFilter = this.config.get<string>('SOLVENCY_TENANT_ID', '')?.trim() || 'default';
     this.metrics?.recordSolvencyThreshold({
-      tenant: tenantFilter || 'default',
+      tenant: tenantFilter,
       thresholdStroops: threshold,
     });
     this.metrics?.recordSolvencyBuffer({
-      tenant: tenantFilter || 'default',
+      tenant: tenantFilter,
       bufferStroops: buffer,
     });
 

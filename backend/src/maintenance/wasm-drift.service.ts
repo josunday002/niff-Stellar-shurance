@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
+import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
 import { PrismaService } from '../prisma/prisma.service';
@@ -110,7 +111,6 @@ export class WasmDriftService {
       return;
     }
 
-    const { default: axios } = await import('axios');
     const secret = this.config.get<string>('WASM_DRIFT_WEBHOOK_SECRET', '');
     try {
       await axios.post(

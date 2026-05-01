@@ -3,7 +3,7 @@
  *
  * All Soroban interactions go through this module so the rest of the backend
  * never touches stellar-sdk directly.  Each public function handles its own
- * error mapping so callers receive structured AppErrors.
+ * error mapping so callers receive structured NestJS HTTP exceptions.
  *
  * SECURITY: Private keys are never accepted, logged, or stored here.
  *           All transactions returned are unsigned.
@@ -22,7 +22,7 @@ import {
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import { config } from '../config/env';
 import { getRuntimeEnv } from '../config/runtime-env';
-import { AppError } from '../middleware/errorHandler';
+import { BadGatewayException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 
 // Convenience aliases
 const { Api, assembleTransaction } = SorobanRpc;
@@ -95,51 +95,40 @@ async function loadAccount(
       msg.toLowerCase().includes('not found') ||
       msg.toLowerCase().includes('does not exist')
     ) {
-      throw new AppError(
-        400,
-        'ACCOUNT_NOT_FOUND',
+      throw new BadRequestException(
         `Account ${publicKey} does not exist on this network. ` +
           'Fund it with at least 1 XLM (testnet: use Friendbot) before building a transaction.',
       );
     }
     if (msg.toLowerCase().includes('network') || msg.toLowerCase().includes('passphrase')) {
-      throw new AppError(
-        400,
-        'WRONG_NETWORK',
+      throw new BadRequestException(
         'The configured Soroban RPC is on a different network than expected. ' +
           'Check STELLAR_NETWORK_PASSPHRASE and SOROBAN_RPC_URL.',
       );
     }
-    throw new AppError(
-      502,
-      'RPC_UNAVAILABLE',
+    throw new BadGatewayException(
       'Could not reach the Soroban RPC endpoint. Please try again shortly.',
-      { cause: msg },
     );
   }
 }
 
-function mapSimulationError(error: string): AppError {
+function mapSimulationError(error: string): BadRequestException | ServiceUnavailableException {
   if (
     error.includes('WasmVm') ||
     error.includes('non-existent') ||
     error.includes('InvalidAction')
   ) {
-    return new AppError(
-      503,
-      'CONTRACT_NOT_DEPLOYED',
+    return new ServiceUnavailableException(
       'The smart contract function is not yet deployed on this network. ' +
         'Testnet contract deployment may be pending.',
     );
   }
   if (error.toLowerCase().includes('balance')) {
-    return new AppError(
-      400,
-      'INSUFFICIENT_BALANCE',
+    return new BadRequestException(
       'The account does not have enough XLM to cover the transaction fee.',
     );
   }
-  return new AppError(400, 'SIMULATION_FAILED', error);
+  return new BadRequestException(error);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

@@ -5,8 +5,9 @@
 use niffyinsure::{
     types::{ClaimStatus, VoteOption, DEFAULT_GRACE_PERIOD_LEDGERS},
     validate::Error,
-    NiffyInsureClient, PolicyError,
+    NiffyInsureClient,
 };
+use niffyinsure::policy_lifecycle::PolicyError as LifecyclePolicyError;
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     vec, Address, Env, String,
@@ -75,7 +76,7 @@ fn process_expired_reverts_before_lapse() {
         .err()
         .unwrap()
         .unwrap();
-    assert_eq!(err, PolicyError::PolicyLapseNotReached);
+    assert_eq!(err, LifecyclePolicyError::PolicyLapseNotReached);
 }
 
 #[test]
@@ -100,7 +101,7 @@ fn process_expired_reverts_when_open_claim() {
         .err()
         .unwrap()
         .unwrap();
-    assert_eq!(err, PolicyError::OpenClaimsMustFinalize);
+    assert_eq!(err, LifecyclePolicyError::OpenClaimsMustFinalize);
 }
 
 // ── process_deadline ──────────────────────────────────────────────────────────

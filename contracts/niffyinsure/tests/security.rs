@@ -318,7 +318,7 @@ fn event01_propose_admin_emits_event() {
     let (env, client, _, _) = setup();
     let new_admin = Address::generate(&env);
     client.propose_admin(&new_admin);
-    assert!(!env.events().all().is_empty());
+    assert!(!env.events().all().len() == 0);
 }
 
 #[test]
@@ -344,14 +344,14 @@ fn event01_set_token_emits_event() {
     let (env, client, _, _) = setup();
     let new_token = Address::generate(&env);
     client.set_token(&new_token);
-    assert!(!env.events().all().is_empty());
+    assert!(!env.events().all().len() == 0);
 }
 
 #[test]
 fn event01_pause_emits_event() {
     let (env, client, admin, _) = setup();
     client.pause(&admin, &0u32);
-    assert!(!env.events().all().is_empty());
+    assert!(!env.events().all().len() == 0);
 }
 
 #[test]

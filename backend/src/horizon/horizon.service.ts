@@ -9,7 +9,7 @@ import { getNetworkConfig } from "../config/network.config";
 import { filterHorizonOperations } from "./filters/horizon-field.filter";
 import { HorizonTransactionResponse } from "./dto/horizon-transaction.dto";
 import { RedisService } from "../cache/redis.service";
-import { HorizonRateLimitService } from "../horizon-rate-limit.service";
+import { HorizonRateLimitService } from "./horizon-rate-limit.service";
 
 const CACHE_TTL_SECONDS = 15;
 const CACHE_PREFIX = "horizon:txcache:";
@@ -91,31 +91,18 @@ export class HorizonService {
           : {}),
       };
 
-      // Use rate limiting service for Horizon API calls
-      const response = await this.rateLimitService.executeWithRateLimit<Record<string, unknown>>(
-        url,
-        {
-          headers,
-          signal: AbortSignal.timeout(10_000),
-        },
-        'horizon-api'
-      );
+      const res = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
 
-      this.logger.debug(`Horizon request successful: ${url}`);
-      return response;
+      if (!res.ok) {
+        throw new Error(`Horizon returned HTTP ${res.status}`);
+      }
+
+      return (await res.json()) as Record<string, unknown>;
     } catch (err) {
       this.logger.error(`Horizon fetch failed: ${err}`);
-      
-      // Handle rate limit specific errors
-      if (err instanceof Error) {
-        if (err.message.includes('queue is full')) {
-          throw new BadGatewayException("Horizon rate limit queue is full - please try again later");
-        }
-        if (err.message.includes('timed out')) {
-          throw new BadGatewayException("Horizon request timed out");
-        }
-      }
-      
       throw new BadGatewayException("Horizon is unreachable");
     }
   }

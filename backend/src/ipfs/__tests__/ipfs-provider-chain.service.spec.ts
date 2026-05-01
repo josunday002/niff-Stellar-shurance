@@ -48,7 +48,7 @@ describe('IpfsProviderChainService', () => {
 
   beforeEach(() => {
     service = new IpfsProviderChainService({
-      get: () => undefined,
+      get: (_key: string, defaultVal?: unknown) => defaultVal,
     } as never);
   });
 

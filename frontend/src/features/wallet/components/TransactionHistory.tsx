@@ -196,7 +196,7 @@ export function TransactionHistory({ address }: Props) {
           headline="No transactions yet"
           description="Your transaction history will appear here once you purchase a policy or file a claim."
           ctaLabel="Purchase Policy"
-          ctaHref="/policy"
+          ctaHref="/policies"
         />
       )}
 

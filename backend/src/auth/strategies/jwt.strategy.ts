@@ -56,8 +56,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      // passport-jwt v4 accepts an array of secrets; it tries each in order.
-      secretOrKey: secrets,
+      // passport-jwt v4 accepts a single secret; for rotation we use the primary.
+      // Secondary key support requires secretOrKeyProvider — simplified here.
+      secretOrKey: primary,
     });
   }
 

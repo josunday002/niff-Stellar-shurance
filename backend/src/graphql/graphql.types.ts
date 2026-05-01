@@ -9,22 +9,22 @@ export class PolicyNode {
   @Field(() => Int)
   policyId!: number;
 
-  @Field()
+  @Field(() => String)
   holderAddress!: string;
 
-  @Field()
+  @Field(() => String)
   policyType!: string;
 
-  @Field()
+  @Field(() => String)
   region!: string;
 
-  @Field()
+  @Field(() => String)
   coverageAmount!: string;
 
-  @Field()
+  @Field(() => String)
   premium!: string;
 
-  @Field()
+  @Field(() => Boolean)
   isActive!: boolean;
 
   @Field(() => Int)
@@ -33,7 +33,7 @@ export class PolicyNode {
   @Field(() => Int)
   endLedger!: number;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   assetContractId?: string | null;
 
   @Field(() => GraphQLISODateTime)
@@ -45,7 +45,7 @@ export class PolicyNode {
 
 @ObjectType()
 export class AdminPolicyNode extends PolicyNode {
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   tenantId?: string | null;
 
   @Field(() => GraphQLISODateTime, { nullable: true })
@@ -57,25 +57,25 @@ export class ClaimNode {
   @Field(() => Int)
   id!: number;
 
-  @Field()
+  @Field(() => String)
   policyId!: string;
 
-  @Field()
+  @Field(() => String)
   creatorAddress!: string;
 
-  @Field()
+  @Field(() => String)
   status!: string;
 
-  @Field()
+  @Field(() => String)
   amount!: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   description?: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   evidenceHash?: string;
 
-  @Field()
+  @Field(() => String)
   evidenceGatewayUrl!: string;
 
   @Field(() => Int)
@@ -105,7 +105,7 @@ export class ClaimNode {
   @Field(() => Int)
   quorumPercentage!: number;
 
-  @Field()
+  @Field(() => Boolean)
   quorumReached!: boolean;
 
   @Field(() => Int)
@@ -114,13 +114,13 @@ export class ClaimNode {
   @Field(() => GraphQLISODateTime)
   votingDeadlineTime!: Date;
 
-  @Field()
+  @Field(() => Boolean)
   deadlineOpen!: boolean;
 
   @Field(() => Int, { nullable: true })
   remainingSeconds?: number;
 
-  @Field()
+  @Field(() => Boolean)
   isFinalized!: boolean;
 
   @Field(() => Int)
@@ -129,16 +129,16 @@ export class ClaimNode {
   @Field(() => Int)
   lastIndexedLedger!: number;
 
-  @Field()
+  @Field(() => Boolean)
   isStale!: boolean;
 
-  @Field()
+  @Field(() => Boolean)
   tallyReconciled!: boolean;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   userVote?: string;
 
-  @Field({ nullable: true })
+  @Field(() => Boolean, { nullable: true })
   userHasVoted?: boolean;
 }
 
@@ -147,7 +147,7 @@ export class PolicyConnectionNode {
   @Field(() => [PolicyNode])
   items!: PolicyNode[];
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   nextCursor!: string | null;
 
   @Field(() => Int)
@@ -159,7 +159,7 @@ export class ClaimConnectionNode {
   @Field(() => [ClaimNode])
   items!: ClaimNode[];
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   nextCursor!: string | null;
 
   @Field(() => Int)
@@ -168,43 +168,43 @@ export class ClaimConnectionNode {
 
 @InputType()
 export class PoliciesQueryInput {
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   after?: string;
 
   @Field(() => Int, { nullable: true })
   first?: number;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   holderAddress?: string;
 
-  @Field({ nullable: true })
+  @Field(() => Boolean, { nullable: true })
   active?: boolean;
 }
 
 @InputType()
 export class ClaimsQueryInput {
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   after?: string;
 
   @Field(() => Int, { nullable: true })
   first?: number;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   status?: string;
 }
 
 @ObjectType()
 export class GraphqlViewer {
-  @Field()
+  @Field(() => Boolean)
   authenticated!: boolean;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   identityKind?: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   walletAddress?: string;
 
-  @Field({ nullable: true })
+  @Field(() => String, { nullable: true })
   staffRole?: string;
 }
 
@@ -214,10 +214,10 @@ export class VoteAddedEvent {
   @Field(() => Int)
   claimId!: number;
 
-  @Field()
+  @Field(() => String)
   voter!: string;
 
-  @Field()
+  @Field(() => String)
   vote!: string;
 
   @Field(() => Int)

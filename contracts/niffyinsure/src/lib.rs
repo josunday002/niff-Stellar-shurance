@@ -174,6 +174,7 @@ impl NiffyInsure {
             51 => validate::Error::VoterSnapshotExpired,
             52 => validate::Error::NonceMismatch,
             53 => validate::Error::ClaimNotProcessing,
+            54 => validate::Error::RollingClaimCapExceeded,
             _ => validate::Error::ClaimNotApproved,
         };
         policy::map_quote_error(&env, err)

@@ -11,6 +11,7 @@ import { ClaimResolver } from './claim.resolver';
 import { GraphqlRateLimitGuard } from './graphql-rate-limit.guard';
 import { GraphqlWalletAuthGuard } from './graphql-wallet-auth.guard';
 import { GraphqlOperationGuardService } from './graphql-operation-guard.service';
+import { VotePubSubService } from './vote-pubsub.service';
 import { createGraphqlSecurityPlugin, formatGraphqlError } from './graphql-apollo.plugins';
 import { ClaimsService } from '../claims/claims.service';
 import { PolicyReadService } from '../policy/policy-read.service';
@@ -163,6 +164,10 @@ describe('GraphQL integration', () => {
         {
           provide: ClaimsService,
           useValue: claimsServiceMock,
+        },
+        {
+          provide: VotePubSubService,
+          useValue: { pubSub: { asyncIterator: jest.fn() } },
         },
       ],
     }).compile();
@@ -362,8 +367,9 @@ describe('GraphQL integration', () => {
         `,
       });
 
-    expect(response.status).toBe(200);
-    expect(response.body.errors[0].extensions.code).toBe('GRAPHQL_DEPTH_LIMIT');
+    // Apollo Server 5 returns HTTP 400 for validation errors (including depth limit)
+    expect(response.status).toBe(400);
+    expect(response.body.errors[0].extensions.code).toBe('GRAPHQL_VALIDATION_FAILED');
     expect(policyReadServiceMock.getPolicyById).not.toHaveBeenCalled();
     expect(claimsServiceMock.getClaimsByPolicyIds).not.toHaveBeenCalled();
   });

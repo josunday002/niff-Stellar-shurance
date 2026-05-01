@@ -107,6 +107,7 @@ fn single_claim_at_cap_succeeds() {
         &CoverageType::Standard,
         &80,
         &500_000i128,
+        &token,
         &niffyinsure::types::InitiatePolicyOptions { beneficiary: None, deductible: None, expected_nonce: None },
     );
 
@@ -146,6 +147,7 @@ fn two_claims_summing_to_cap_succeed() {
         &CoverageType::Standard,
         &80,
         &500_000i128,
+        &token,
         &niffyinsure::types::InitiatePolicyOptions { beneficiary: None, deductible: None, expected_nonce: None },
     );
 
@@ -188,6 +190,7 @@ fn file_claim_over_cap_fails() {
         &CoverageType::Standard,
         &80,
         &500_000i128,
+        &token,
         &niffyinsure::types::InitiatePolicyOptions { beneficiary: None, deductible: None, expected_nonce: None },
     );
 
@@ -230,6 +233,7 @@ fn cap_lowered_after_file_does_not_block_payout() {
         &CoverageType::Standard,
         &80,
         &500_000i128,
+        &token,
         &niffyinsure::types::InitiatePolicyOptions { beneficiary: None, deductible: None, expected_nonce: None },
     );
 
@@ -271,6 +275,7 @@ fn window_rollover_resets_cumulative() {
         &CoverageType::Standard,
         &80,
         &500_000i128,
+        &token,
         &niffyinsure::types::InitiatePolicyOptions { beneficiary: None, deductible: None, expected_nonce: None },
     );
 

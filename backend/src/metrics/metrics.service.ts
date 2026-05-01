@@ -141,13 +141,6 @@ export class MetricsService implements OnModuleInit {
     });
 
     this.rpcCallDuration = new client.Histogram({
-      name: 'bullmq_dlq_jobs_total',
-      help: 'Total jobs moved to dead-letter queue after max retries',
-      labelNames: ['queue', 'job_name', 'failure_reason'],
-      registers: [this.registry],
-    });
-
-    this.rpcCallDuration = new client.Histogram({
       name: 'rpc_call_duration_seconds',
       help: 'Soroban RPC call latency in seconds',
       labelNames: ['rpc_method', 'status'],

@@ -26,7 +26,7 @@ describe('AdminService', () => {
           fn({ ledgerCursor: { upsert } })),
       };
 
-      const svc = new AdminService(prisma as never);
+      const svc = new AdminService(prisma as never, { refreshFlags: jest.fn() } as never);
       const jobId = await svc.enqueueReindex(500, 'testnet');
 
       expect(jobId).toBe('queued-job-id');
@@ -50,7 +50,7 @@ describe('AdminService', () => {
         $transaction: jest.fn(async (fn: (t: { ledgerCursor: { upsert: jest.Mock } }) => Promise<void>) =>
           fn({ ledgerCursor: { upsert } })),
       };
-      const svc = new AdminService(prisma as never);
+      const svc = new AdminService(prisma as never, { refreshFlags: jest.fn() } as never);
       await svc.enqueueReindex(0, 'public');
       expect(upsert).toHaveBeenCalledWith(
         expect.objectContaining({

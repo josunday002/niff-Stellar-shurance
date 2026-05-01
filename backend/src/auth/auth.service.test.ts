@@ -6,6 +6,7 @@
  */
 
 import { Keypair } from '@stellar/stellar-sdk';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { generateChallenge, verifyChallenge } from './auth.service';
 import { _setNonceStoreForTests, NonceStore } from './nonce.store';
 
@@ -62,10 +63,7 @@ describe('auth.service', () => {
     });
 
     it('rejects an invalid public key', async () => {
-      await expect(generateChallenge('not-a-key')).rejects.toMatchObject({
-        code: 'INVALID_PUBLIC_KEY',
-        statusCode: 400,
-      });
+      await expect(generateChallenge('not-a-key')).rejects.toBeInstanceOf(BadRequestException);
     });
   });
 
@@ -95,22 +93,22 @@ describe('auth.service', () => {
       // Second use with the same nonce must fail
       await expect(
         verifyChallenge(keypair.publicKey(), nonce, sig),
-      ).rejects.toMatchObject({ code: 'NONCE_EXPIRED_OR_USED', statusCode: 401 });
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 
   describe('verifyChallenge — expired nonce', () => {
     it('rejects an expired nonce from the store', async () => {
-      // Manually insert an already-expired entry
-      await store.set('expired-nonce', JSON.stringify({ publicKey: keypair.publicKey(), message: 'msg', issuedAt: '' }), 0);
-      // TTL=0 means it expires immediately
-
-      // Small delay to ensure expiry
+      await store.set(
+        'expired-nonce',
+        JSON.stringify({ publicKey: keypair.publicKey(), message: 'msg', issuedAt: '' }),
+        0,
+      );
       await new Promise((r) => setTimeout(r, 10));
 
       await expect(
         verifyChallenge(keypair.publicKey(), 'expired-nonce', 'AAAA'),
-      ).rejects.toMatchObject({ code: 'NONCE_EXPIRED_OR_USED', statusCode: 401 });
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 
@@ -122,7 +120,7 @@ describe('auth.service', () => {
 
       await expect(
         verifyChallenge(keypair.publicKey(), nonce, badSig),
-      ).rejects.toMatchObject({ code: 'INVALID_SIGNATURE', statusCode: 401 });
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 
@@ -133,7 +131,7 @@ describe('auth.service', () => {
 
       await expect(
         verifyChallenge(keypair.publicKey(), nonce, tampered),
-      ).rejects.toMatchObject({ code: 'INVALID_SIGNATURE', statusCode: 401 });
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 
@@ -145,7 +143,7 @@ describe('auth.service', () => {
 
       await expect(
         verifyChallenge(other.publicKey(), nonce, sig),
-      ).rejects.toMatchObject({ code: 'KEY_MISMATCH', statusCode: 401 });
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 });

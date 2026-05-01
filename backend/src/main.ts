@@ -110,7 +110,7 @@ async function bootstrap() {
   );
 
   app.enableCors({
-    origin: (origin, cb) => {
+    origin: (origin: string | undefined, cb: (err: Error | null, allow?: boolean | string) => void) => {
       if (!origin) return cb(null, true); // server-to-server / same-origin
       const allowed = [...frontendOrigins, ...adminOrigins];
       if (allowed.includes(origin)) return cb(null, origin); // echo exact origin

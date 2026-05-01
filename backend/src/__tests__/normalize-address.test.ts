@@ -2,11 +2,10 @@ import { normalizeAddress, tryNormalizeAddress } from '../common/utils/normalize
 import { BadRequestException } from '@nestjs/common';
 
 // Valid test fixtures
-const G_ADDRESS = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN';
+const G_ADDRESS = 'GB7UW6GUZ4ZNLNOA2W5TUB2WK4AT5ZN4VVBVSXN3URPQGCEO6SNSCA4Q';
 const C_ADDRESS = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
-// Muxed address encoding the same G_ADDRESS with mux ID 1
-// Generated via: new MuxedAccount(new Account(G_ADDRESS, '0'), BigInt(1)).accountId()
-const M_ADDRESS = 'MA7QYNF7SOWQ3GLR2BGMZEHXR3IXDOQNKWKBWX5AAAAAAAAAPCIBVZA';
+// Muxed address derived from G_ADDRESS with mux ID 1
+const M_ADDRESS = 'MB7UW6GUZ4ZNLNOA2W5TUB2WK4AT5ZN4VVBVSXN3URPQGCEO6SNSCAAAAAAAAAAAAFI4U';
 
 describe('normalizeAddress', () => {
   it('returns G-address unchanged', () => {

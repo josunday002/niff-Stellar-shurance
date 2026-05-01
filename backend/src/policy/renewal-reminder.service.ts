@@ -155,7 +155,8 @@ export class RenewalReminderService {
 
      
     while (true) {
-      const page = await this.prisma.policy.findMany({
+      const page: Array<{ id: string; policyId: number; holderAddress: string; endLedger: number }> =
+        await this.prisma.policy.findMany({
         where: {
           isActive: true,
           deletedAt: null,

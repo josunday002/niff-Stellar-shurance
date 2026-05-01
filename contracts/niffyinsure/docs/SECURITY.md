@@ -88,22 +88,18 @@ covered by multi-asset and emergency-sweep tests.
 | VOTE-01 | Ineligible or duplicate voter changes outcome | Active-policy eligibility, snapshot TTL, duplicate vote guards | `tests/voting.rs`, `tests/claim_voter_snapshot_ttl.rs` |
 | GOV-01 | Quorum/duration config produces unsafe values | Bounded admin setters | `tests/quorum_governance.rs`, `tests/voting_duration_config.rs` |
 | OPS-01 | Pause/unpause masks critical paths incorrectly | Granular pause flag tests | `tests/admin.rs`, `tests/security.rs` |
-| EVENT-01 | Indexer misses critical state transition | Structured event dictionary and event tests | `tests/events_integration_stale.rs` is quarantined; current event coverage exists in focused flow tests |
+| EVENT-01 | Indexer misses critical state transition | Structured event dictionary and event tests | Event coverage exists in focused flow tests (`tests/voting.rs`, `tests/admin.rs`, `tests/integration.rs`) |
 
 ## Quarantined Tests
 
-`quarantine/events_integration_stale.rs` remains intentionally quarantined. It
-asserts legacy event topics such as `niffyins` / `adm_paus`, while the contract
-now emits current `#[contractevent]` topics such as `niffyinsure` and
-`pause_toggled`. Restoring it without rewriting the expected schema would create
-false failures and hide the real audit signal.
+The `quarantine/` directory has been removed. The stale events integration test
+(`events_integration_stale.rs`) that previously lived there asserted legacy event
+topics (`niffyins` / `adm_paus`) that no longer match the current `#[contractevent]`
+topics (`niffyinsure`, `pause_toggled`, etc.).
 
-Before external audit, either:
-
-1. Rewrite the quarantined tests against the current `EVENT_DICTIONARY.md`
-   topics and move them into `tests/`, or
-2. Keep them quarantined and file a signed audit exception that names the
-   replacement coverage.
+Before external audit, write replacement event-shape tests against the current
+`docs/EVENT_DICTIONARY.md` topics and add them to `tests/`. See `tests/voting.rs` and
+`tests/admin.rs` for the current event coverage pattern.
 
 ## Coverage Gate
 
@@ -121,7 +117,7 @@ audited commit confirms it.
 ## Event Schema
 All admin actions emit structured events for indexer monitoring:
 - Topics: `["niffyinsure", "admin_*"]`
-- Full dictionary: EVENT_DICTIONARY.md
+- Full dictionary: docs/EVENT_DICTIONARY.md
 
 ## Audit Status
 - [x] Admin operations documented

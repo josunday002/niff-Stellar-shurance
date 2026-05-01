@@ -65,33 +65,6 @@ export class PrismaService
     this.slowQueryThresholdMs = slowQueryThresholdMs;
     this.poolMax = poolMax;
 
-    this.$use(async (params, next) => {
-      this.activeQueries++;
-      this.emitPoolMetrics();
-
-      const startedAt = Date.now();
-      try {
-        const result = await next(params);
-        const durationMs = Date.now() - startedAt;
-
-        if (durationMs >= this.slowQueryThresholdMs) {
-          this.logger.warn(
-            JSON.stringify({
-              event: 'prisma_slow_query',
-              model: params.model,
-              action: params.action,
-              durationMs,
-            }),
-          );
-        }
-
-        return result;
-      } finally {
-        this.activeQueries = Math.max(0, this.activeQueries - 1);
-        this.emitPoolMetrics();
-      }
-    });
-
     // Expose pool config for observability (logged at startup).
     this.logger.log(
       JSON.stringify({
@@ -118,6 +91,24 @@ export class PrismaService
 
   async onModuleInit() {
     await this.$connect();
+    // Slow-query monitoring via Prisma query events (Prisma 6 compatible).
+    // $use middleware was removed in Prisma 6; use $on('query') instead.
+    (this as unknown as { $on: (event: string, cb: (e: { duration: number; query: string; model?: string }) => void) => void })
+      .$on('query', (e) => {
+        this.activeQueries++;
+        this.emitPoolMetrics();
+        if (e.duration >= this.slowQueryThresholdMs) {
+          this.logger.warn(
+            JSON.stringify({
+              event: 'prisma_slow_query',
+              query: e.query,
+              durationMs: e.duration,
+            }),
+          );
+        }
+        this.activeQueries = Math.max(0, this.activeQueries - 1);
+        this.emitPoolMetrics();
+      });
     // Emit initial zero-state metrics so gauges appear in the first scrape.
     this.emitPoolMetrics();
   }

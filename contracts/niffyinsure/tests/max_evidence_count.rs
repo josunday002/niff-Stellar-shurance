@@ -65,15 +65,15 @@ fn default_max_evidence_count_is_compile_time_constant() {
 #[test]
 fn admin_can_set_max_evidence_count() {
     let (_env, client, _, _) = setup();
-    client.admin_set_max_evidence_count(&8u32).unwrap();
+    client.admin_set_max_evidence_count(&8u32);
     assert_eq!(client.get_max_evidence_count(), 8u32);
 }
 
 #[test]
 fn setter_emits_max_evidence_count_updated_event() {
     let (env, client, _, _) = setup();
-    client.admin_set_max_evidence_count(&8u32).unwrap();
-    assert!(!env.events().all().is_empty());
+    client.admin_set_max_evidence_count(&8u32);
+    assert!(env.events().all().len() > 0);
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn setter_rejects_value_above_hard_max() {
     let result = client.try_admin_set_max_evidence_count(&(MAX_EVIDENCE_COUNT_HARD_MAX + 1));
     assert!(result.is_err());
     assert!(
-        soroban_sdk::testutils::arbitrary::std::format!("{:?}", result)
+        format!("{:?}", result)
             .contains("MaxEvidenceCountOutOfBounds")
     );
 }
@@ -91,8 +91,7 @@ fn setter_rejects_value_above_hard_max() {
 fn setter_accepts_hard_max_exactly() {
     let (_env, client, _, _) = setup();
     client
-        .admin_set_max_evidence_count(&MAX_EVIDENCE_COUNT_HARD_MAX)
-        .unwrap();
+        .admin_set_max_evidence_count(&MAX_EVIDENCE_COUNT_HARD_MAX);
     assert_eq!(client.get_max_evidence_count(), MAX_EVIDENCE_COUNT_HARD_MAX);
 }
 
@@ -158,7 +157,7 @@ fn file_claim_over_default_limit_reverts() {
 #[test]
 fn file_claim_at_raised_limit_succeeds() {
     let (env, client, holder, _token) = setup();
-    client.admin_set_max_evidence_count(&8u32).unwrap();
+    client.admin_set_max_evidence_count(&8u32);
     seed_policy(&env, &client, &holder, 1, 1_000_000_000);
     let evidence = make_evidence(&env, 8);
     let result = client.try_file_claim(
@@ -175,7 +174,7 @@ fn file_claim_at_raised_limit_succeeds() {
 #[test]
 fn file_claim_over_raised_limit_reverts() {
     let (env, client, holder, _token) = setup();
-    client.admin_set_max_evidence_count(&8u32).unwrap();
+    client.admin_set_max_evidence_count(&8u32);
     seed_policy(&env, &client, &holder, 1, 1_000_000_000);
     let evidence = make_evidence(&env, 9);
     let result = client.try_file_claim(
@@ -195,7 +194,7 @@ fn file_claim_over_raised_limit_reverts() {
 fn reducing_limit_does_not_invalidate_existing_claims() {
     let (env, client, holder, _token) = setup();
     // Raise limit to 8, file a claim with 8 evidence entries
-    client.admin_set_max_evidence_count(&8u32).unwrap();
+    client.admin_set_max_evidence_count(&8u32);
     seed_policy(&env, &client, &holder, 1, 1_000_000_000);
     let evidence = make_evidence(&env, 8);
     let claim_id = client
@@ -206,13 +205,12 @@ fn reducing_limit_does_not_invalidate_existing_claims() {
             &String::from_str(&env, "test claim"),
             &evidence,
             &None,
-        )
-        .unwrap();
+        );
 
     // Admin reduces limit back to 3
-    client.admin_set_max_evidence_count(&3u32).unwrap();
+    client.admin_set_max_evidence_count(&3u32);
 
     // Existing claim is still readable and valid
-    let claim = client.get_claim(&claim_id).unwrap();
+    let claim = client.get_claim(&claim_id);
     assert_eq!(claim.evidence.len(), 8u32);
 }

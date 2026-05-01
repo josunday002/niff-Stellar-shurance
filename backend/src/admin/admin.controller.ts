@@ -19,6 +19,7 @@ import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminRoleGuard } from './guards/admin-role.guard';
 import { AdminService } from './admin.service';
@@ -31,6 +32,7 @@ import { SetRateLimitDto, EnableOverrideDto } from './dto/rate-limit.dto';
 import { PrivacyService, PrivacyRequestType } from '../maintenance/privacy.service';
 import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { QueueMonitorService } from '../queues/queue-monitor.service';
+import { SolvencyMonitoringService } from '../maintenance/solvency-monitoring.service';
 
 class PrivacyRequestDto {
   @IsString() subjectWalletAddress!: string;
@@ -57,6 +59,7 @@ export class AdminController {
     private readonly rateLimitService: RateLimitService,
     private readonly queueMonitor: QueueMonitorService,
     private readonly configService: ConfigService,
+    private readonly solvencyMonitoringService: SolvencyMonitoringService,
   ) {}
 
   /**
@@ -100,7 +103,7 @@ export class AdminController {
     await this.auditService.write({
       actor,
       action: 'audit_log_read',
-      payload: { cursor: query.cursor, limit: query.limit, action: query.action, actor: query.actor, from: query.from, to: query.to } as Record<string, unknown>,
+      payload: { cursor: query.cursor, limit: query.limit, action: query.action, actor: query.actor, from: query.from, to: query.to } as Prisma.InputJsonObject,
       ipAddress: req.ip,
     });
     return this.auditService.findAll(query);
@@ -124,7 +127,7 @@ export class AdminController {
     await this.auditService.write({
       actor,
       action: 'audit_log_export',
-      payload: { action: query.action, actor: query.actor, from: query.from, to: query.to } as Record<string, unknown>,
+      payload: { action: query.action, actor: query.actor, from: query.from, to: query.to } as Prisma.InputJsonObject,
       ipAddress: req.ip,
     });
     await this.auditService.streamCsv(

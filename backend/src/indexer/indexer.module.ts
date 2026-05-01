@@ -11,7 +11,7 @@ import { MetricsModule } from '../metrics/metrics.module';
 import { EventsModule } from '../events/events.module';
 
 @Module({
-  imports: [PrismaModule, RpcModule, ConfigModule, ScheduleModule.forFeature(), EventsModule],
+  imports: [PrismaModule, RpcModule, ConfigModule, ScheduleModule.forRoot(), EventsModule],
   providers: [IndexerService, IndexerWorker, ReindexWorkerService, ReconciliationService],
   exports: [IndexerService, ReconciliationService],
 })

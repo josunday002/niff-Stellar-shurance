@@ -3,7 +3,6 @@ import {
   Get,
   Query,
   Req,
-  Res,
   Sse,
   UseGuards,
   MessageEvent,
@@ -20,7 +19,7 @@ import {
 import { Throttle } from "@nestjs/throttler";
 import { Observable } from "rxjs";
 import { map, finalize } from "rxjs/operators";
-import type { Request, Response } from "express";
+import type { Request } from "express";
 import { randomUUID } from "crypto";
 import { OptionalJwtAuthGuard } from "../tx/guards/optional-jwt.guard";
 import { SseConnectionRegistry } from "./sse-connection.registry";
@@ -89,7 +88,6 @@ export class EventsController {
   streamClaims(
     @Query("claimId") claimIdParam: string | string[],
     @Req() req: Request,
-    @Res() res: Response,
   ): Observable<MessageEvent> {
     const claimIds = (Array.isArray(claimIdParam) ? claimIdParam : [claimIdParam])
       .filter(Boolean)
@@ -105,11 +103,6 @@ export class EventsController {
 
     const connectionId = randomUUID();
 
-    // Set SSE-specific headers (NestJS @Sse sets Content-Type automatically)
-    res.setHeader("Cache-Control", "no-cache");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no"); // Prevent nginx from buffering SSE
-
     const connection = this.registry.register(connectionId, claimIds, walletAddress);
 
     this.logger.log(
@@ -117,19 +110,8 @@ export class EventsController {
         `claims=[${claimIds.join(",")}] total=${this.registry.activeCount()}`,
     );
 
-    // Heartbeat timer — keeps the connection alive through 60 s proxy timeouts
-    const heartbeatTimer = setInterval(() => {
-      try {
-        // Send SSE comment line (not dispatched as a message event)
-        res.write(": heartbeat\n\n");
-      } catch {
-        // Connection already gone
-      }
-    }, 25_000);
-
     // Cleanup on client disconnect
     req.on("close", () => {
-      clearInterval(heartbeatTimer);
       this.registry.unregister(connectionId);
       this.logger.log(
         `SSE connection closed: ${connectionId} total=${this.registry.activeCount()}`,
@@ -138,13 +120,11 @@ export class EventsController {
 
     return connection.subject.pipe(
       map((event: MessageEvent) => ({
-        // Embed retry hint in every event frame
         retry: SSE_RETRY_MS,
         type: "claim_update",
         data: event.data,
       })),
       finalize(() => {
-        clearInterval(heartbeatTimer);
         this.registry.unregister(connectionId);
       }),
     );

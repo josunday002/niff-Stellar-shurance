@@ -98,7 +98,7 @@ export function PolicyCard({ policy, onRenew, onTerminate, onFileClaim, currentL
       <div className="flex items-start justify-between gap-2">
         <div>
           <Link
-            href={`/policy/${encodeURIComponent(policy.holder)}/${policy.policy_id}`}
+            href={`/policies/${policy.policy_id}`}
             className="font-mono text-sm font-semibold text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
           >
             #{policy.policy_id}
@@ -155,7 +155,7 @@ export function PolicyCard({ policy, onRenew, onTerminate, onFileClaim, currentL
       {/* Actions */}
       <div className="flex flex-wrap gap-2 pt-1">
         <Link
-          href={`/policy/${encodeURIComponent(policy.holder)}/${policy.policy_id}`}
+          href={`/policies/${policy.policy_id}`}
           className="min-h-[44px] min-w-[44px] inline-flex items-center rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-500"
         >
           View Details
@@ -222,7 +222,7 @@ export function PolicyRow({ policy, onRenew, onTerminate, onFileClaim, currentLe
     <tr className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
       <td className="px-4 py-3 text-sm">
         <Link
-          href={`/policy/${encodeURIComponent(policy.holder)}/${policy.policy_id}`}
+          href={`/policies/${policy.policy_id}`}
           className="font-mono font-semibold text-blue-700 hover:underline focus:outline-none focus:ring-2 focus:ring-blue-500 rounded"
         >
           #{policy.policy_id}
@@ -253,7 +253,7 @@ export function PolicyRow({ policy, onRenew, onTerminate, onFileClaim, currentLe
       <td className="px-4 py-3 text-sm">
         <div className="flex flex-wrap gap-2">
           <Link
-            href={`/policy/${encodeURIComponent(policy.holder)}/${policy.policy_id}`}
+            href={`/policies/${policy.policy_id}`}
             className="min-h-[44px] min-w-[44px] inline-flex items-center rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-blue-500"
           >
             View Details

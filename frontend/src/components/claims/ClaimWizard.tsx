@@ -158,7 +158,7 @@ export function ClaimWizard({ policyId, maxCoverage, policyCoverage }: ClaimWiza
       });
 
       setTimeout(() => {
-        router.push(`/policy/${policyId}`);
+        router.push(`/policies`);
       }, 3000);
     } catch (error) {
       const msg = error instanceof Error ? error.message : 'An unexpected error occurred.';
@@ -190,8 +190,8 @@ export function ClaimWizard({ policyId, maxCoverage, policyCoverage }: ClaimWiza
               Your claim has been broadcast to the network and is awaiting verification by the DAO.
             </p>
           </div>
-          <Button onClick={() => router.push(`/policy/${policyId}`)}>
-            Back to Policy
+          <Button onClick={() => router.push(`/policies`)}>
+            Back to Policies
           </Button>
         </CardContent>
       </Card>

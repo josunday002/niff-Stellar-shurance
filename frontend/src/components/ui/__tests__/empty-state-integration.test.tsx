@@ -53,7 +53,7 @@ describe('Empty State Integration Tests', () => {
 
       const ctaLink = screen.queryByRole('link', { name: /purchase/i })
       if (ctaLink) {
-        expect(ctaLink).toHaveAttribute('href', expect.stringContaining('/policy'))
+        expect(ctaLink).toHaveAttribute('href', expect.stringContaining('/policies'))
       }
     })
   })
@@ -102,7 +102,7 @@ describe('Empty State Integration Tests', () => {
           headline="No transactions yet"
           description="Your transaction history will appear here."
           ctaLabel="Purchase Policy"
-          ctaHref="/policy"
+          ctaHref="/policies"
         />
       )
 
@@ -119,12 +119,12 @@ describe('Empty State Integration Tests', () => {
           headline="No transactions yet"
           description="Start here."
           ctaLabel="Purchase Policy"
-          ctaHref="/policy"
+          ctaHref="/policies"
         />
       )
 
       const ctaLink = screen.getByRole('link', { name: /purchase policy/i })
-      expect(ctaLink).toHaveAttribute('href', '/policy')
+      expect(ctaLink).toHaveAttribute('href', '/policies')
     })
   })
 

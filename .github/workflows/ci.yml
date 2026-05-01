@@ -68,7 +68,7 @@ jobs:
         run: |
           # Extract event names from #[contractevent] macro topic strings in events.rs
           EVENT_RS=contracts/niffyinsure/src/events.rs
-          DICT=EVENT_DICTIONARY.md
+          DICT=docs/EVENT_DICTIONARY.md
 
           # Collect the second topic (event name) from each #[contractevent(...)] line
           missing=0

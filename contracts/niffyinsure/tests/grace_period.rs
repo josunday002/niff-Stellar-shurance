@@ -79,7 +79,7 @@ fn set_grace_period_emits_event_with_old_and_new() {
     let new_grace = MIN_GRACE_PERIOD_LEDGERS + 500;
     client.set_grace_period_ledgers(&new_grace);
     // Event was emitted (non-empty events list)
-    assert!(!env.events().all().is_empty());
+    assert!(!env.events().all().len() == 0);
     let _ = old; // old value captured for documentation
 }
 

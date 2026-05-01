@@ -1,7 +1,7 @@
 use soroban_sdk::{contracterror, BytesN, Env, String, Vec};
 
 use crate::types::{
-    Claim, ClaimEvidenceEntry, MultiplierTable, Policy, RiskInput, DETAILS_MAX_LEN, IMAGE_URLS_MAX,
+    Claim, ClaimEvidenceEntry, MultiplierTable, Policy, RiskInput, DETAILS_MAX_LEN,
     IMAGE_URL_MAX_LEN, REASON_MAX_LEN, SAFETY_SCORE_MAX,
 };
 #[cfg(feature = "experimental")]
@@ -65,6 +65,8 @@ pub enum Error {
     NonceMismatch = 52,
     /// Keeper `process_deadline` called on a claim not in `Processing` status.
     ClaimNotProcessing = 53,
+    /// New claim would exceed the rolling per-policy paid-amount cap for the current window.
+    RollingClaimCapExceeded = 54,
 }
 
 pub fn validate_quorum_bps(bps: u32) -> Result<(), Error> {

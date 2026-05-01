@@ -21,6 +21,7 @@ describe('GeneratePremiumDtoSchema', () => {
   const valid = {
     policy_type: 'Auto',
     region: 'Low',
+    coverage_tier: 'Basic',
     age: 30,
     risk_score: 5,
   };

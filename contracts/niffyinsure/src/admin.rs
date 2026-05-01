@@ -82,24 +82,31 @@ pub enum AdminActionTag {
 
 /// Two-step high-risk admin action stored in pending state.
 ///
-/// The tag + payload fields replace a single enum-with-struct-variants because
-/// Soroban `#[contracttype]` does not support enum variants with named fields.
+/// Flat struct layout — Soroban `#[contracttype]` does not support
+/// `Option<CustomContractType>` fields. The `tag` discriminant determines
+/// which payload fields are meaningful.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdminAction {
     pub tag: AdminActionTag,
-    /// Set when tag == TreasuryRotation; None otherwise.
-    pub treasury_rotation: Option<TreasuryRotationPayload>,
-    /// Set when tag == TokenSweep; None otherwise.
-    pub token_sweep: Option<TokenSweepPayload>,
+    // TreasuryRotation payload (valid when tag == TreasuryRotation)
+    pub new_treasury: Address,
+    // TokenSweep payload (valid when tag == TokenSweep)
+    pub sweep_asset: Address,
+    pub sweep_recipient: Address,
+    pub sweep_amount: i128,
+    pub sweep_reason_code: u32,
 }
 
 impl AdminAction {
     pub fn treasury_rotation(new_treasury: Address) -> Self {
         Self {
             tag: AdminActionTag::TreasuryRotation,
-            treasury_rotation: Some(TreasuryRotationPayload { new_treasury }),
-            token_sweep: None,
+            new_treasury: new_treasury.clone(),
+            sweep_asset: new_treasury.clone(),
+            sweep_recipient: new_treasury.clone(),
+            sweep_amount: 0,
+            sweep_reason_code: 0,
         }
     }
 
@@ -111,8 +118,11 @@ impl AdminAction {
     ) -> Self {
         Self {
             tag: AdminActionTag::TokenSweep,
-            treasury_rotation: None,
-            token_sweep: Some(TokenSweepPayload { asset, recipient, amount, reason_code }),
+            new_treasury: asset.clone(),
+            sweep_asset: asset,
+            sweep_recipient: recipient,
+            sweep_amount: amount,
+            sweep_reason_code: reason_code,
         }
     }
 }
@@ -293,16 +303,18 @@ pub fn confirm_admin_action(env: &Env, confirmer: Address) {
     let action = pending.action.clone();
     match action.tag {
         AdminActionTag::TreasuryRotation => {
-            let p = action.treasury_rotation.clone()
-                .unwrap_or_else(|| panic_with_error!(env, AdminError::NoPendingAdminAction));
             let old_treasury = storage::get_treasury(env);
-            storage::set_treasury(env, &p.new_treasury);
-            TreasuryUpdated { old_treasury, new_treasury: p.new_treasury }.publish(env);
+            storage::set_treasury(env, &action.new_treasury);
+            TreasuryUpdated { old_treasury, new_treasury: action.new_treasury.clone() }.publish(env);
         }
         AdminActionTag::TokenSweep => {
-            let p = action.token_sweep.clone()
-                .unwrap_or_else(|| panic_with_error!(env, AdminError::NoPendingAdminAction));
-            sweep_token_inner(env, p.asset, p.recipient, p.amount, p.reason_code);
+            sweep_token_inner(
+                env,
+                action.sweep_asset.clone(),
+                action.sweep_recipient.clone(),
+                action.sweep_amount,
+                action.sweep_reason_code,
+            );
         }
     }
 
@@ -434,7 +446,7 @@ pub fn drain(env: &Env, recipient: Address, amount: i128) {
 /// See full docs above.
 pub fn sweep_token(env: &Env, asset: Address, recipient: Address, amount: i128, reason_code: u32) {
     storage::bump_instance(env);
-    let admin = require_admin(env);
+    let _admin = require_admin(env);
     // ... (existing validation logic)
     sweep_token_inner(env, asset, recipient, amount, reason_code);
 }

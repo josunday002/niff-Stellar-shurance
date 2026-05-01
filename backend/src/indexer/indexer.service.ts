@@ -13,6 +13,7 @@ import {
 import { ClaimEventsService } from '../events/claim-events.service';
 import { rpc as SorobanRpc, scValToNative } from '@stellar/stellar-sdk';
 import { tryNormalizeAddress } from '../common/utils/normalize-address';
+import { QuoteSimulationCacheService } from '../quote/quote-simulation-cache.service';
 
 type IndexerTx = Prisma.TransactionClient;
 type SorobanEvent = SorobanRpc.Api.EventResponse;
@@ -94,6 +95,7 @@ export class IndexerService {
     private readonly config: ConfigService,
     @Optional() private readonly metrics?: MetricsService,
     @Optional() private readonly claimEvents?: ClaimEventsService,
+    @Optional() private readonly quoteSimulationCache?: QuoteSimulationCacheService,
   ) {
     this.networkId = this.config.get<string>('STELLAR_NETWORK', 'testnet');
     this.gapThresholdLedgers = this.config.get<number>('INDEXER_GAP_ALERT_THRESHOLD_LEDGERS', 100);

@@ -1,5 +1,5 @@
-import { PostgreSqlContainer, StartedPostgreSqlContainer } from 'testcontainers';
-import { RedisContainer, StartedRedisContainer } from 'testcontainers';
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { RedisContainer, StartedRedisContainer } from '@testcontainers/redis';
 import { execSync } from 'child_process';
 import * as path from 'path';
 

@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { FeatureFlagsService } from './feature-flags.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -17,6 +18,7 @@ describe('FeatureFlagsService', () => {
       providers: [
         FeatureFlagsService,
         { provide: PrismaService, useValue: mockPrismaService },
+        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue(undefined) } },
       ],
     }).compile();
 
@@ -34,7 +36,7 @@ describe('FeatureFlagsService', () => {
         { key: 'flag1', enabled: true },
         { key: 'flag2', enabled: false },
       ];
-      mockPrisma.featureFlag.findMany.mockResolvedValue(mockFlags);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValue(mockFlags);
 
       await service.onModuleInit();
 
@@ -45,7 +47,7 @@ describe('FeatureFlagsService', () => {
     });
 
     it('should handle database errors gracefully', async () => {
-      mockPrisma.featureFlag.findMany.mockRejectedValue(new Error('DB error'));
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockRejectedValue(new Error('DB error'));
 
       const loggerSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
@@ -62,7 +64,7 @@ describe('FeatureFlagsService', () => {
         { key: 'enabled_flag', enabled: true },
         { key: 'disabled_flag', enabled: false },
       ];
-      mockPrisma.featureFlag.findMany.mockResolvedValue(mockFlags);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValue(mockFlags);
 
       await (service as any).loadFlagsFromDb();
 
@@ -73,7 +75,7 @@ describe('FeatureFlagsService', () => {
 
     it('should log the number of loaded flags', async () => {
       const mockFlags = [{ key: 'flag1', enabled: true }];
-      mockPrisma.featureFlag.findMany.mockResolvedValue(mockFlags);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValue(mockFlags);
 
       const loggerSpy = jest.spyOn(service['logger'], 'log').mockImplementation();
 
@@ -86,7 +88,7 @@ describe('FeatureFlagsService', () => {
   describe('isEnabled', () => {
     beforeEach(async () => {
       const mockFlags = [{ key: 'test_flag', enabled: true }];
-      mockPrisma.featureFlag.findMany.mockResolvedValue(mockFlags);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValue(mockFlags);
       await (service as any).loadFlagsFromDb();
     });
 
@@ -102,13 +104,15 @@ describe('FeatureFlagsService', () => {
   describe('getDisabledStatusCode', () => {
     it('should return 403 when env var is 403', () => {
       process.env.FEATURE_FLAGS_DISABLED_STATUS = '403';
-      const newService = new FeatureFlagsService(mockPrisma);
+      const mockConfig = { get: jest.fn().mockImplementation((key: string) => key === 'FEATURE_FLAGS_DISABLED_STATUS' ? '403' : undefined) };
+      const newService = new FeatureFlagsService(mockConfig as unknown as ConfigService, mockPrisma);
       expect(newService.getDisabledStatusCode()).toBe(403);
     });
 
     it('should return 404 by default', () => {
       delete process.env.FEATURE_FLAGS_DISABLED_STATUS;
-      const newService = new FeatureFlagsService(mockPrisma);
+      const mockConfig = { get: jest.fn().mockReturnValue(undefined) };
+      const newService = new FeatureFlagsService(mockConfig as unknown as ConfigService, mockPrisma);
       expect(newService.getDisabledStatusCode()).toBe(404);
     });
   });
@@ -116,7 +120,7 @@ describe('FeatureFlagsService', () => {
   describe('getFlags', () => {
     it('should return a copy of the feature map', async () => {
       const mockFlags = [{ key: 'flag1', enabled: true }];
-      mockPrisma.featureFlag.findMany.mockResolvedValue(mockFlags);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValue(mockFlags);
       await (service as any).loadFlagsFromDb();
 
       const flags = service.getFlags();
@@ -130,13 +134,13 @@ describe('FeatureFlagsService', () => {
 
   describe('refreshFlags', () => {
     it('should reload flags from database', async () => {
-      mockPrisma.featureFlag.findMany.mockResolvedValueOnce([{ key: 'flag1', enabled: true }]);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValueOnce([{ key: 'flag1', enabled: true }]);
       await (service as any).loadFlagsFromDb();
 
       expect(service.isEnabled('flag1')).toBe(true);
 
       // Update mock to return different flags
-      mockPrisma.featureFlag.findMany.mockResolvedValueOnce([{ key: 'flag1', enabled: false }]);
+      (mockPrisma.featureFlag.findMany as jest.Mock).mockResolvedValueOnce([{ key: 'flag1', enabled: false }]);
       await service.refreshFlags();
 
       expect(service.isEnabled('flag1')).toBe(false);

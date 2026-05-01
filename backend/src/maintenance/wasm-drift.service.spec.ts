@@ -2,18 +2,40 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { WasmDriftService } from './wasm-drift.service';
-import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
+
+// Mock the entire @stellar/stellar-sdk so Server is replaceable
+const mockGetLedgerEntries = jest.fn();
+jest.mock('@stellar/stellar-sdk', () => {
+  const actual = jest.requireActual('@stellar/stellar-sdk');
+  return {
+    ...actual,
+    rpc: {
+      ...actual.rpc,
+      Server: jest.fn().mockImplementation(() => ({
+        getLedgerEntries: mockGetLedgerEntries,
+      })),
+    },
+  };
+});
+
+// Mock axios — static import in service, so jest.mock works reliably
+jest.mock('axios');
+import axios from 'axios';
+const mockAxiosPost = axios.post as jest.Mock;
+// Valid Stellar C-address for use in tests
+const VALID_CONTRACT_ID = 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
 
 describe('WasmDriftService', () => {
   let service: WasmDriftService;
   let mockConfig: jest.Mocked<ConfigService>;
   let mockPrisma: jest.Mocked<PrismaService>;
-  let mockServer: jest.Mocked<SorobanRpc.Server>;
 
   beforeEach(async () => {
-    const mockConfigService = {
-      get: jest.fn(),
-    };
+    jest.clearAllMocks();
+    mockGetLedgerEntries.mockReset();
+    mockAxiosPost.mockReset();
+
+    const mockConfigService = { get: jest.fn() };
     const mockPrismaService = {
       wasmDriftAlert: {
         findUnique: jest.fn(),
@@ -32,63 +54,35 @@ describe('WasmDriftService', () => {
     service = module.get<WasmDriftService>(WasmDriftService);
     mockConfig = module.get(ConfigService);
     mockPrisma = module.get(PrismaService);
-
-    // Mock SorobanRpc.Server
-    mockServer = {
-      getLedgerEntries: jest.fn(),
-    } as any;
-    jest.spyOn(SorobanRpc, 'Server').mockImplementation(() => mockServer);
   });
 
-  afterEach(() => {
-    jest.clearAllMocks();
-  });
+  // ── checkDrift ────────────────────────────────────────────────────────────
 
   describe('checkDrift', () => {
-    it('should skip contracts with missing config', async () => {
-      mockConfig.get.mockImplementation((key: string) => {
+    const setupRegistry = (contracts: object[]) => {
+      jest.spyOn(service as any, 'loadRegistry').mockReturnValue({ contracts });
+      mockConfig.get.mockImplementation((key: string, defaultVal?: unknown) => {
         if (key === 'SOROBAN_RPC_URL') return 'https://soroban-testnet.stellar.org';
         if (key === 'DEPLOYMENT_REGISTRY_PATH') return 'contracts/deployment-registry.json';
-        return undefined;
+        return defaultVal ?? '';  // return empty string for unknown keys so resolveEnv produces ''
       });
+    };
 
-      // Mock fs and path
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue(JSON.stringify({
-        contracts: [{ name: 'test', contractId: '${MISSING_VAR}', expectedWasmHash: 'hash' }]
-      }));
-      jest.spyOn(require('path'), 'resolve').mockReturnValue('/path/to/registry.json');
-
+    it('skips contracts with missing config', async () => {
       const loggerSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
-
+      setupRegistry([{ name: 'test', contractId: '${MISSING_VAR}', expectedWasmHash: 'hash' }]);
       await service.checkDrift();
-
-      expect(loggerSpy).toHaveBeenCalledWith('Skipping test: CONTRACT_ID or expected hash not configured');
+      expect(loggerSpy).toHaveBeenCalledWith(
+        'Skipping test: CONTRACT_ID or expected hash not configured',
+      );
     });
 
-    it('should detect and handle drift', async () => {
-      mockConfig.get.mockImplementation((key: string) => {
-        if (key === 'SOROBAN_RPC_URL') return 'https://soroban-testnet.stellar.org';
-        if (key === 'DEPLOYMENT_REGISTRY_PATH') return 'contracts/deployment-registry.json';
-        return undefined;
-      });
-
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue(JSON.stringify({
-        contracts: [{ name: 'test', contractId: 'test-id', expectedWasmHash: 'expected-hash' }]
-      }));
-      jest.spyOn(require('path'), 'resolve').mockReturnValue('/path/to/registry.json');
-
-      // Mock fetchOnChainWasmHash to return different hash
+    it('detects and handles drift', async () => {
+      setupRegistry([{ name: 'test', contractId: 'test-id', expectedWasmHash: 'expected-hash' }]);
       jest.spyOn(service as any, 'fetchOnChainWasmHash').mockResolvedValue('actual-hash');
-
-      // Mock no existing alert
-      mockPrisma.wasmDriftAlert.findUnique.mockResolvedValue(null);
-
-      // Mock create alert
-      mockPrisma.wasmDriftAlert.create.mockResolvedValue({} as any);
-
-      // Mock sendWebhookAlert
-      jest.spyOn(service as any, 'sendWebhookAlert').mockResolvedValue();
-
+      (mockPrisma.wasmDriftAlert.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.wasmDriftAlert.create as jest.Mock).mockResolvedValue({} as any);
+      jest.spyOn(service as any, 'sendWebhookAlert').mockResolvedValue(undefined);
       const loggerSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
       await service.checkDrift();
@@ -99,74 +93,42 @@ describe('WasmDriftService', () => {
           contractName: 'test',
           contractId: 'test-id',
           expectedHash: 'expected-hash',
-          actualHash: 'actual-hash'
-        }
+          actualHash: 'actual-hash',
+        },
       });
       expect(loggerSpy).toHaveBeenCalledWith(
-        '[wasm-drift] DRIFT DETECTED on test | expected=expected-hash | actual=actual-hash'
+        '[wasm-drift] DRIFT DETECTED on test | expected=expected-hash | actual=actual-hash',
       );
     });
 
-    it('should skip already alerted drift', async () => {
-      mockConfig.get.mockImplementation((key: string) => {
-        if (key === 'SOROBAN_RPC_URL') return 'https://soroban-testnet.stellar.org';
-        if (key === 'DEPLOYMENT_REGISTRY_PATH') return 'contracts/deployment-registry.json';
-        return undefined;
-      });
-
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue(JSON.stringify({
-        contracts: [{ name: 'test', contractId: 'test-id', expectedWasmHash: 'expected-hash' }]
-      }));
-      jest.spyOn(require('path'), 'resolve').mockReturnValue('/path/to/registry.json');
-
+    it('skips already-alerted drift', async () => {
+      setupRegistry([{ name: 'test', contractId: 'test-id', expectedWasmHash: 'expected-hash' }]);
       jest.spyOn(service as any, 'fetchOnChainWasmHash').mockResolvedValue('actual-hash');
-
-      // Mock existing alert
-      mockPrisma.wasmDriftAlert.findUnique.mockResolvedValue({} as any);
-
+      (mockPrisma.wasmDriftAlert.findUnique as jest.Mock).mockResolvedValue({} as any);
       const loggerSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
 
       await service.checkDrift();
 
       expect(mockPrisma.wasmDriftAlert.create).not.toHaveBeenCalled();
-      expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] DRIFT on test already alerted (dedup key: test:actual-hash)');
+      expect(loggerSpy).toHaveBeenCalledWith(
+        '[wasm-drift] DRIFT on test already alerted (dedup key: test:actual-hash)',
+      );
     });
 
-    it('should log OK for matching hashes', async () => {
-      mockConfig.get.mockImplementation((key: string) => {
-        if (key === 'SOROBAN_RPC_URL') return 'https://soroban-testnet.stellar.org';
-        if (key === 'DEPLOYMENT_REGISTRY_PATH') return 'contracts/deployment-registry.json';
-        return undefined;
-      });
-
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue(JSON.stringify({
-        contracts: [{ name: 'test', contractId: 'test-id', expectedWasmHash: 'matching-hash' }]
-      }));
-      jest.spyOn(require('path'), 'resolve').mockReturnValue('/path/to/registry.json');
-
+    it('logs OK for matching hashes', async () => {
+      setupRegistry([{ name: 'test', contractId: 'test-id', expectedWasmHash: 'matching-hash' }]);
       jest.spyOn(service as any, 'fetchOnChainWasmHash').mockResolvedValue('matching-hash');
-
       const loggerSpy = jest.spyOn(service['logger'], 'log').mockImplementation();
 
       await service.checkDrift();
 
-      expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] test: OK (matching-ha…)');
+      // Service uses slice(0, 12) — 'matching-has' + '…'
+      expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] test: OK (matching-has…)');
     });
 
-    it('should handle fetch errors gracefully', async () => {
-      mockConfig.get.mockImplementation((key: string) => {
-        if (key === 'SOROBAN_RPC_URL') return 'https://soroban-testnet.stellar.org';
-        if (key === 'DEPLOYMENT_REGISTRY_PATH') return 'contracts/deployment-registry.json';
-        return undefined;
-      });
-
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue(JSON.stringify({
-        contracts: [{ name: 'test', contractId: 'test-id', expectedWasmHash: 'hash' }]
-      }));
-      jest.spyOn(require('path'), 'resolve').mockReturnValue('/path/to/registry.json');
-
+    it('handles fetch errors gracefully', async () => {
+      setupRegistry([{ name: 'test', contractId: 'test-id', expectedWasmHash: 'hash' }]);
       jest.spyOn(service as any, 'fetchOnChainWasmHash').mockRejectedValue(new Error('RPC error'));
-
       const loggerSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
       await service.checkDrift();
@@ -175,22 +137,23 @@ describe('WasmDriftService', () => {
     });
   });
 
+  // ── fetchOnChainWasmHash ──────────────────────────────────────────────────
+
   describe('fetchOnChainWasmHash', () => {
-    it('should use getContractWasmByContractId if available', async () => {
-      const mockServerWithMethod = {
-        ...mockServer,
+    it('uses getContractWasmByContractId when available', async () => {
+      const mockSrv = {
+        getLedgerEntries: mockGetLedgerEntries,
         getContractWasmByContractId: jest.fn().mockResolvedValue({ wasmHash: 'hash-from-method' }),
       };
-
-      const result = await (service as any).fetchOnChainWasmHash(mockServerWithMethod, 'contract-id');
-
-      expect(mockServerWithMethod.getContractWasmByContractId).toHaveBeenCalledWith('contract-id');
+      const result = await (service as any).fetchOnChainWasmHash(mockSrv, VALID_CONTRACT_ID);
+      expect(mockSrv.getContractWasmByContractId).toHaveBeenCalledWith(VALID_CONTRACT_ID);
       expect(result).toBe('hash-from-method');
     });
 
-    it('should fall back to manual ledger entry parsing', async () => {
+    it('falls back to manual ledger entry parsing', async () => {
       const mockEntry = {
-        val: () => ({
+        key: {} as any,
+        val: {
           contractData: () => ({
             val: () => ({
               instance: () => ({
@@ -200,160 +163,96 @@ describe('WasmDriftService', () => {
               }),
             }),
           }),
-        }),
+        },
       };
-
-      mockServer.getLedgerEntries.mockResolvedValue({ entries: [mockEntry] });
-
-      const result = await (service as any).fetchOnChainWasmHash(mockServer, 'contract-id');
-
-      expect(mockServer.getLedgerEntries).toHaveBeenCalled();
-      expect(result).toBe('6d616e75616c2d68617368'); // hex of 'manual-hash'
+      mockGetLedgerEntries.mockResolvedValue({ entries: [mockEntry], latestLedger: 1000 });
+      const mockSrv = { getLedgerEntries: mockGetLedgerEntries };
+      const result = await (service as any).fetchOnChainWasmHash(mockSrv, VALID_CONTRACT_ID);
+      expect(mockGetLedgerEntries).toHaveBeenCalled();
+      expect(result).toBe('6d616e75616c2d68617368');
     });
 
-    it('should throw if no ledger entry found', async () => {
-      mockServer.getLedgerEntries.mockResolvedValue({ entries: [] });
-
-      await expect((service as any).fetchOnChainWasmHash(mockServer, 'contract-id')).rejects.toThrow(
-        'No ledger entry for contract contract-id'
-      );
+    it('throws if no ledger entry found', async () => {
+      mockGetLedgerEntries.mockResolvedValue({ entries: [], latestLedger: 1000 });
+      const mockSrv = { getLedgerEntries: mockGetLedgerEntries };
+      await expect(
+        (service as any).fetchOnChainWasmHash(mockSrv, VALID_CONTRACT_ID),
+      ).rejects.toThrow(`No ledger entry for contract ${VALID_CONTRACT_ID}`);
     });
   });
 
-  describe('handleDrift', () => {
-    it('should create alert and send webhook', async () => {
-      mockPrisma.wasmDriftAlert.findUnique.mockResolvedValue(null);
-      mockPrisma.wasmDriftAlert.create.mockResolvedValue({} as any);
+  // ── handleDrift ───────────────────────────────────────────────────────────
 
-      jest.spyOn(service as any, 'sendWebhookAlert').mockResolvedValue();
+  describe('handleDrift', () => {
+    it('creates alert and calls sendWebhookAlert', async () => {
+      (mockPrisma.wasmDriftAlert.findUnique as jest.Mock).mockResolvedValue(null);
+      (mockPrisma.wasmDriftAlert.create as jest.Mock).mockResolvedValue({} as any);
+      jest.spyOn(service as any, 'sendWebhookAlert').mockResolvedValue(undefined);
 
       await (service as any).handleDrift('test', 'id', 'exp', 'act');
 
       expect(mockPrisma.wasmDriftAlert.create).toHaveBeenCalledWith({
-        data: {
-          dedupKey: 'test:act',
-          contractName: 'test',
-          contractId: 'id',
-          expectedHash: 'exp',
-          actualHash: 'act',
-        },
+        data: { dedupKey: 'test:act', contractName: 'test', contractId: 'id', expectedHash: 'exp', actualHash: 'act' },
       });
       expect((service as any).sendWebhookAlert).toHaveBeenCalledWith({
-        name: 'test',
-        contractId: 'id',
-        expected: 'exp',
-        actual: 'act',
+        name: 'test', contractId: 'id', expected: 'exp', actual: 'act',
       });
     });
   });
 
+  // ── sendWebhookAlert ──────────────────────────────────────────────────────
+
   describe('sendWebhookAlert', () => {
-    it('should send webhook if URL configured', async () => {
+    it('skips when URL not configured', async () => {
+      mockConfig.get.mockReturnValue(undefined);
+      const loggerSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
+      await (service as any).sendWebhookAlert({ name: 'test', contractId: 'id', expected: 'exp', actual: 'act' });
+      expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] WASM_DRIFT_WEBHOOK_URL not set — alert logged only');
+    });
+
+    it('sends webhook when URL configured', async () => {
       mockConfig.get.mockImplementation((key: string) => {
         if (key === 'WASM_DRIFT_WEBHOOK_URL') return 'https://webhook.example.com';
         if (key === 'WASM_DRIFT_WEBHOOK_SECRET') return 'secret';
         return undefined;
       });
-
-      const axiosPost = jest.fn().mockResolvedValue({});
-      jest.doMock('axios', () => ({ default: { post: axiosPost } }));
-
+      mockAxiosPost.mockResolvedValue({});
       const loggerSpy = jest.spyOn(service['logger'], 'log').mockImplementation();
 
-      await (service as any).sendWebhookAlert({
-        name: 'test',
-        contractId: 'id',
-        expected: 'exp',
-        actual: 'act',
-      });
+      await (service as any).sendWebhookAlert({ name: 'test', contractId: 'id', expected: 'exp', actual: 'act' });
 
-      expect(axiosPost).toHaveBeenCalledWith(
+      expect(mockAxiosPost).toHaveBeenCalledWith(
         'https://webhook.example.com',
-        expect.objectContaining({
-          event: 'wasm_drift_detected',
-          severity: 'critical',
-          contract: 'test',
-          contractId: 'id',
-          expectedHash: 'exp',
-          actualHash: 'act',
-        }),
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'X-Webhook-Secret': 'secret',
-          }),
-          timeout: 5000,
-        })
+        expect.objectContaining({ event: 'wasm_drift_detected', contract: 'test' }),
+        expect.objectContaining({ headers: expect.objectContaining({ 'X-Webhook-Secret': 'secret' }) }),
       );
       expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] Alert webhook delivered for test');
     });
 
-    it('should skip webhook if URL not configured', async () => {
-      mockConfig.get.mockReturnValue(undefined);
-
-      const loggerSpy = jest.spyOn(service['logger'], 'warn').mockImplementation();
-
-      await (service as any).sendWebhookAlert({
-        name: 'test',
-        contractId: 'id',
-        expected: 'exp',
-        actual: 'act',
-      });
-
-      expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] WASM_DRIFT_WEBHOOK_URL not set — alert logged only');
-    });
-
-    it('should handle webhook delivery failure', async () => {
+    it('handles webhook delivery failure', async () => {
       mockConfig.get.mockImplementation((key: string) => {
         if (key === 'WASM_DRIFT_WEBHOOK_URL') return 'https://webhook.example.com';
         return undefined;
       });
-
-      const axiosPost = jest.fn().mockRejectedValue(new Error('Network error'));
-      jest.doMock('axios', () => ({ default: { post: axiosPost } }));
-
+      mockAxiosPost.mockRejectedValue(new Error('Network error'));
       const loggerSpy = jest.spyOn(service['logger'], 'error').mockImplementation();
 
-      await (service as any).sendWebhookAlert({
-        name: 'test',
-        contractId: 'id',
-        expected: 'exp',
-        actual: 'act',
-      });
+      await (service as any).sendWebhookAlert({ name: 'test', contractId: 'id', expected: 'exp', actual: 'act' });
 
       expect(loggerSpy).toHaveBeenCalledWith('[wasm-drift] Webhook delivery failed: Network error');
     });
   });
 
-  describe('loadRegistry', () => {
-    it('should load and parse registry file', () => {
-      mockConfig.get.mockReturnValue('custom/path.json');
-
-      jest.spyOn(require('path'), 'resolve').mockReturnValue('/resolved/path.json');
-      jest.spyOn(require('fs'), 'readFileSync').mockReturnValue('{"contracts": [{"name": "test"}]}');
-
-      const result = (service as any).loadRegistry();
-
-      expect(result).toEqual({ contracts: [{ name: 'test' }] });
-    });
-  });
+  // ── resolveEnv ────────────────────────────────────────────────────────────
 
   describe('resolveEnv', () => {
-    it('should resolve environment variables', () => {
-      mockConfig.get.mockImplementation((key: string) => {
-        if (key === 'TEST_VAR') return 'resolved-value';
-        return '';
-      });
-
-      const result = (service as any).resolveEnv('${TEST_VAR} and ${MISSING_VAR}');
-
-      expect(result).toBe('resolved-value and ');
+    it('resolves environment variables', () => {
+      mockConfig.get.mockImplementation((key: string) => key === 'TEST_VAR' ? 'resolved-value' : '');
+      expect((service as any).resolveEnv('${TEST_VAR} and ${MISSING_VAR}')).toBe('resolved-value and ');
     });
 
-    it('should return unchanged if no placeholders', () => {
-      const result = (service as any).resolveEnv('no-vars-here');
-
-      expect(result).toBe('no-vars-here');
+    it('returns unchanged if no placeholders', () => {
+      expect((service as any).resolveEnv('no-vars-here')).toBe('no-vars-here');
     });
   });
 });

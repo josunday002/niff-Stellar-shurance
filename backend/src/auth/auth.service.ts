@@ -19,8 +19,8 @@
 import { Keypair, StrKey } from '@stellar/stellar-sdk';
 import jwt from 'jsonwebtoken';
 import { v4 as uuidv4 } from 'uuid';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { config } from '../config/env';
-import { AppError } from '../middleware/errorHandler';
 import { getNonceStore } from './nonce.store';
 
 // ── Challenge message ─────────────────────────────────────────────────────────
@@ -75,7 +75,7 @@ export async function generateChallenge(
   publicKey: string,
 ): Promise<ChallengeResponse> {
   if (!StrKey.isValidEd25519PublicKey(publicKey)) {
-    throw new AppError(400, 'INVALID_PUBLIC_KEY', 'Invalid Stellar public key.');
+    throw new BadRequestException('Invalid Stellar public key.');
   }
 
   const nonce = uuidv4();
@@ -99,16 +99,14 @@ export async function verifyChallenge(
   signatureBase64: string,
 ): Promise<VerifyResponse> {
   if (!StrKey.isValidEd25519PublicKey(publicKey)) {
-    throw new AppError(400, 'INVALID_PUBLIC_KEY', 'Invalid Stellar public key.');
+    throw new BadRequestException('Invalid Stellar public key.');
   }
 
   const store = await getNonceStore();
   const raw = await store.get(nonce);
 
   if (!raw) {
-    throw new AppError(
-      401,
-      'NONCE_EXPIRED_OR_USED',
+    throw new UnauthorizedException(
       'Challenge expired or already used. Request a new challenge.',
     );
   }
@@ -118,9 +116,7 @@ export async function verifyChallenge(
   if (stored.publicKey !== publicKey) {
     // Delete nonce to invalidate any further attempts with this nonce
     await store.del(nonce);
-    throw new AppError(
-      401,
-      'KEY_MISMATCH',
+    throw new UnauthorizedException(
       'The public key does not match the one used to request the challenge.',
     );
   }
@@ -135,19 +131,13 @@ export async function verifyChallenge(
     const msgBytes = Buffer.from(stored.message);
     const valid = keypair.verify(msgBytes, sigBytes);
     if (!valid) {
-      throw new AppError(
-        401,
-        'INVALID_SIGNATURE',
+      throw new UnauthorizedException(
         'Signature verification failed. Ensure you signed the exact message string.',
       );
     }
   } catch (err) {
-    if (err instanceof AppError) throw err;
-    throw new AppError(
-      401,
-      'INVALID_SIGNATURE',
-      'Signature verification failed.',
-    );
+    if (err instanceof UnauthorizedException) throw err;
+    throw new UnauthorizedException('Signature verification failed.');
   }
 
   // Mint JWT — scope is explicitly 'user'; no admin capabilities are granted.

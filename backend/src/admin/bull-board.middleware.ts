@@ -21,7 +21,7 @@ export class BullBoardMiddleware implements NestMiddleware {
 
     createBullBoard({
       queues: queueMonitor.getQueues().map((q) => new BullMQAdapter(q)),
-      serverAdapter,
+      serverAdapter: serverAdapter as unknown as Parameters<typeof createBullBoard>[0]['serverAdapter'],
     });
 
     this.boardRouter = serverAdapter.getRouter();

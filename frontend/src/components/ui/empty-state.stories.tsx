@@ -19,7 +19,7 @@ export const PoliciesEmpty: Story = {
     headline: 'No policies yet',
     description: 'Get started by purchasing your first insurance policy.',
     ctaLabel: 'Purchase Policy',
-    ctaHref: '/policy',
+    ctaHref: '/policies',
   },
 }
 
@@ -39,7 +39,7 @@ export const TransactionsEmpty: Story = {
     headline: 'No transactions yet',
     description: 'Your transaction history will appear here once you purchase a policy or file a claim.',
     ctaLabel: 'Purchase Policy',
-    ctaHref: '/policy',
+    ctaHref: '/policies',
   },
 }
 
@@ -49,7 +49,7 @@ export const WithSecondaryAction: Story = {
     headline: 'No active policies',
     description: 'All your policies have expired or been terminated.',
     ctaLabel: 'Purchase New Policy',
-    ctaHref: '/policy',
+    ctaHref: '/policies',
     secondaryLabel: 'View expired policies',
     onSecondaryClick: () => alert('Navigate to expired policies'),
   },
@@ -69,7 +69,7 @@ export const ReducedMotion: Story = {
     headline: 'No policies yet',
     description: 'Get started by purchasing your first insurance policy.',
     ctaLabel: 'Purchase Policy',
-    ctaHref: '/policy',
+    ctaHref: '/policies',
   },
   parameters: {
     docs: {

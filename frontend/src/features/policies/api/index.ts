@@ -43,6 +43,7 @@ export const PolicyListDtoSchema = z.object({
 
 export type PolicyDto = z.infer<typeof PolicyDtoSchema>;
 export type PolicyListDto = z.infer<typeof PolicyListDtoSchema>;
+export type ClaimSummaryDto = z.infer<typeof ClaimSummaryDtoSchema>;
 export type PolicyStatusFilter = 'active' | 'expired' | 'all';
 export type PolicySortField = 'expiry' | 'coverage' | 'premium';
 

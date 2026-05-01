@@ -6,7 +6,9 @@ import {
   HttpStatus,
   HttpException,
   Logger,
+  Res,
 } from "@nestjs/common";
+import type { Response } from "express";
 import { HorizonService } from "./horizon.service";
 import { HorizonRateLimitService } from "./horizon-rate-limit.service";
 import { HorizonTransactionResponse } from "./dto/horizon-transaction.dto";
@@ -34,6 +36,7 @@ export class HorizonController {
     @Query("account") account: string,
     @Query("cursor") cursor?: string,
     @Query("limit") limitStr?: string,
+    @Res({ passthrough: true }) res?: Response,
   ): Promise<HorizonTransactionResponse> {
     if (!account) {
       throw new HttpException(
@@ -49,6 +52,7 @@ export class HorizonController {
 
     const rl = await this.rateLimitService.check(account);
     if (!rl.allowed) {
+      res?.setHeader("Retry-After", String(rl.retryAfterSeconds));
       throw new HttpException(
         {
           statusCode: 429,
@@ -57,10 +61,6 @@ export class HorizonController {
           retryAfter: rl.retryAfterSeconds,
         },
         HttpStatus.TOO_MANY_REQUESTS,
-        {
-          // Retry-After header per RFC 7231
-          headers: { "Retry-After": String(rl.retryAfterSeconds) },
-        },
       );
     }
 

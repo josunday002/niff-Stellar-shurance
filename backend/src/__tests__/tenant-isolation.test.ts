@@ -46,12 +46,12 @@ describe('tenantFilter()', () => {
 describe('claimTenantWhere()', () => {
   it('merges tenant filter with extra conditions', () => {
     const where = claimTenantWhere('acme', { status: 'PENDING' });
-    expect(where).toEqual({ tenantId: 'acme', status: 'PENDING' });
+    expect(where).toEqual({ tenantId: 'acme', deletedAt: null, status: 'PENDING' });
   });
 
   it('single-tenant mode omits tenantId', () => {
     const where = claimTenantWhere(null, { status: 'PENDING' });
-    expect(where).toEqual({ status: 'PENDING' });
+    expect(where).toEqual({ deletedAt: null, status: 'PENDING' });
     expect(where).not.toHaveProperty('tenantId');
   });
 
@@ -69,12 +69,12 @@ describe('claimTenantWhere()', () => {
 describe('policyTenantWhere()', () => {
   it('merges tenant filter with extra conditions', () => {
     const where = policyTenantWhere('acme', { isActive: true });
-    expect(where).toEqual({ tenantId: 'acme', isActive: true });
+    expect(where).toEqual({ tenantId: 'acme', deletedAt: null, isActive: true });
   });
 
   it('single-tenant mode omits tenantId', () => {
     const where = policyTenantWhere(null, { isActive: true });
-    expect(where).toEqual({ isActive: true });
+    expect(where).toEqual({ isActive: true, deletedAt: null });
     expect(where).not.toHaveProperty('tenantId');
   });
 });
@@ -131,7 +131,14 @@ function makeMiddleware(enabled = true): {
   // Override env for test
   process.env.TENANT_RESOLUTION_ENABLED = enabled ? 'true' : 'false';
   process.env.TENANT_BASE_DOMAIN = 'niffyinsur.com';
-  const middleware = new TenantMiddleware(ctx);
+  const mockConfig = {
+    get: jest.fn().mockImplementation((key: string, defaultVal?: unknown) => {
+      if (key === 'TENANT_RESOLUTION_ENABLED') return enabled;
+      if (key === 'TENANT_BASE_DOMAIN') return 'niffyinsur.com';
+      return defaultVal ?? undefined;
+    }),
+  };
+  const middleware = new TenantMiddleware(ctx, mockConfig as unknown as import('@nestjs/config').ConfigService);
   return { middleware, ctx };
 }
 

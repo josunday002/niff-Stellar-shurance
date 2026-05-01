@@ -65,13 +65,3 @@ export const QUOTE_ERROR_MESSAGES: Record<string, string> = {
 export function getQuoteErrorMessage(error: QuoteError): string {
   return QUOTE_ERROR_MESSAGES[error.code] ?? error.message
 }
-
-/**
- * @deprecated Use generatePremium() directly.
- * Kept for backward compatibility with policy-initiation.tsx.
- */
-export class QuoteAPI {
-  static async getQuoteById(_quoteId: string): Promise<never> {
-    throw new QuoteError('NOT_SUPPORTED', 'getQuoteById is not supported. Use generatePremium().')
-  }
-}

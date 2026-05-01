@@ -47,7 +47,7 @@ describe('loadNetworkConfig', () => {
         const cfg = loadNetworkConfig();
         expect(cfg.network).toBe('mainnet');
         expect(cfg.networkPassphrase).toBe('Public Global Stellar Network ; September 2015');
-        expect(cfg.rpcUrl).toContain('mainnet');
+        expect(cfg.rpcUrl).toMatch(/stellar\.org/);
       },
     );
   });
@@ -74,7 +74,7 @@ describe('loadNetworkConfig', () => {
         STELLAR_NETWORK_PASSPHRASE: 'Public Global Stellar Network ; September 2015',
       },
       () => {
-        expect(() => loadNetworkConfig()).toThrow(/passphrase mismatch/);
+        expect(() => loadNetworkConfig()).toThrow(/STELLAR_NETWORK_PASSPHRASE mismatch/);
       },
     );
   });

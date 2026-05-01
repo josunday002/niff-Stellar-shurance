@@ -7,7 +7,7 @@
 
 import { Test, TestingModule } from "@nestjs/testing";
 import { INestApplication, HttpStatus } from "@nestjs/common";
-import * as request from "supertest";
+import request from "supertest";
 import { ConfigModule } from "@nestjs/config";
 import { HorizonModule } from "../horizon.module";
 import { RedisService } from "../../cache/redis.service";
@@ -235,7 +235,7 @@ describe("HorizonController (integration)", () => {
   // ── Rate limiting ─────────────────────────────────────────────────────────
 
   it("returns 429 with Retry-After header when rate limit is exceeded", async () => {
-    // Make zcard return a count at the limit
+    // Make zcard return a count at the limit and provide zrange for retry-after calc
     redisMock.getClient.mockReturnValue({
       multi: jest.fn(() => ({
         zremrangebyscore: jest.fn().mockReturnThis(),
@@ -250,7 +250,8 @@ describe("HorizonController (integration)", () => {
         ]),
       })),
       zremrangebyscore: jest.fn(),
-    });
+      zrange: jest.fn().mockResolvedValue([`member`, String(Date.now() - 1000)]),
+    } as unknown as ReturnType<typeof redisMock.getClient>);
 
     const res = await request(app.getHttpServer())
       .get("/api/horizon/transactions")

@@ -15,6 +15,7 @@ describe('PrivacyService', () => {
         {
           provide: PrismaService,
           useValue: {
+            $transaction: jest.fn((ops: unknown[]) => Promise.all(ops)),
             privacyRequest: {
               create: jest.fn(),
               update: jest.fn(),
@@ -44,9 +45,9 @@ describe('PrivacyService', () => {
 
   describe('handleRequest', () => {
     it('should anonymize and audit', async () => {
-      prisma.privacyRequest.create.mockResolvedValue({ id: 'req1' } as any);
-      prisma.claim.updateMany.mockResolvedValue({ count: 1 });
-      prisma.privacyRequest.update.mockResolvedValue({} as any);
+      (prisma.privacyRequest.create as jest.Mock).mockResolvedValue({ id: 'req1' } as any);
+      (prisma.claim.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+      (prisma.privacyRequest.update as jest.Mock).mockResolvedValue({} as any);
 
       const result = await service.handleRequest({
         subjectWalletAddress: 'GABC',
@@ -61,9 +62,9 @@ describe('PrivacyService', () => {
     });
 
     it('should delete and audit', async () => {
-      prisma.privacyRequest.create.mockResolvedValue({ id: 'req2' } as any);
-      prisma.claim.deleteMany.mockResolvedValue({ count: 2 });
-      prisma.privacyRequest.update.mockResolvedValue({} as any);
+      (prisma.privacyRequest.create as jest.Mock).mockResolvedValue({ id: 'req2' } as any);
+      (prisma.claim.deleteMany as jest.Mock).mockResolvedValue({ count: 2 });
+      (prisma.privacyRequest.update as jest.Mock).mockResolvedValue({} as any);
 
       const result = await service.handleRequest({
         subjectWalletAddress: 'GXYZ',
@@ -78,7 +79,7 @@ describe('PrivacyService', () => {
 
   describe('anonymize', () => {
     it('should update claims', async () => {
-      prisma.claim.updateMany.mockResolvedValue({ count: 3 });
+      (prisma.claim.updateMany as jest.Mock).mockResolvedValue({ count: 3 });
 
       const result = await (service as any).anonymize('GABC');
 
@@ -92,7 +93,7 @@ describe('PrivacyService', () => {
 
   describe('delete', () => {
     it('should delete claims', async () => {
-      prisma.claim.deleteMany.mockResolvedValue({ count: 1 });
+      (prisma.claim.deleteMany as jest.Mock).mockResolvedValue({ count: 1 });
 
       const result = await (service as any).delete('GXYZ');
 

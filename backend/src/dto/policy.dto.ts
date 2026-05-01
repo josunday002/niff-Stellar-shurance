@@ -173,7 +173,7 @@ export function toClaimSummaryDto(c: Claim): ClaimSummaryDto {
   return {
     claim_id: c.claim_id,
     amount: c.amount,
-    status: c.status,
+    status: c.status as "Processing" | "Approved" | "Rejected",
     approve_votes: c.approve_votes,
     reject_votes: c.reject_votes,
     voting_deadline_ledger: c.voting_deadline_ledger,

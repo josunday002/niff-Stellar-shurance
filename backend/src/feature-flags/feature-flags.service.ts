@@ -1,7 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   FEATURE_FLAGS_DISABLED_STATUS_ENV,
+  FEATURE_FLAGS_JSON_ENV,
 } from './constants';
 
 type FeatureMap = Record<string, boolean>;
@@ -12,7 +14,10 @@ export class FeatureFlagsService implements OnModuleInit {
   private featureMap: FeatureMap = {};
   private readonly disabledStatusCode: 403 | 404;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
+  ) {
     this.featureMap = this.parseFlags(this.config.get<string>(FEATURE_FLAGS_JSON_ENV));
     this.disabledStatusCode =
       this.config.get<string>(FEATURE_FLAGS_DISABLED_STATUS_ENV) === '403' ? 403 : 404;
@@ -25,7 +30,7 @@ export class FeatureFlagsService implements OnModuleInit {
   async loadFlagsFromDb(): Promise<void> {
     try {
       const flags = await this.prisma.featureFlag.findMany();
-      this.featureMap = flags.reduce<FeatureMap>((acc, flag) => {
+      this.featureMap = flags.reduce<FeatureMap>((acc: FeatureMap, flag: { key: string; enabled: boolean }) => {
         acc[flag.key] = flag.enabled;
         return acc;
       }, {});
@@ -48,8 +53,21 @@ export class FeatureFlagsService implements OnModuleInit {
     return { ...this.featureMap };
   }
 
-  // Method to refresh flags after DB updates
   async refreshFlags(): Promise<void> {
     await this.loadFlagsFromDb();
+  }
+
+  private parseFlags(json: string | undefined): FeatureMap {
+    if (!json) return {};
+    try {
+      const parsed: unknown = JSON.parse(json);
+      if (typeof parsed !== 'object' || parsed === null) return {};
+      return Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>).map(([k, v]) => [k, Boolean(v)]),
+      );
+    } catch {
+      this.logger.warn(`Failed to parse ${FEATURE_FLAGS_JSON_ENV}: invalid JSON`);
+      return {};
+    }
   }
 }
