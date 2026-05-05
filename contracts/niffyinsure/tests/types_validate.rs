@@ -13,6 +13,10 @@ use niffyinsure::{
 };
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String, Vec};
 
+fn register_contract(env: &Env) -> Address {
+    env.register(niffyinsure::NiffyInsure, ())
+}
+
 fn non_zero_hash(env: &Env) -> BytesN<32> {
     let mut a = [0u8; 32];
     a[0] = 1;
@@ -171,12 +175,13 @@ fn inactive_policy_rejected() {
 #[test]
 fn valid_claim_passes() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "roof collapsed");
     let ev = one_url_evidence(&env, "ipfs://Qm123");
-    assert_eq!(
-        check_claim_fields(&env, 1_000_000, 50_000_000, &details, &ev),
-        Ok(())
-    );
+    let result = env.as_contract(&cid, || {
+        check_claim_fields(&env, 1_000_000, 50_000_000, &details, &ev)
+    });
+    assert_eq!(result, Ok(()));
 }
 
 #[test]
@@ -204,20 +209,23 @@ fn claim_exceeds_coverage_rejected() {
 #[test]
 fn claim_amount_equal_to_coverage_passes() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "x");
     let ev = empty_evidence(&env);
-    assert_eq!(
-        check_claim_fields(&env, 50_000_000, 50_000_000, &details, &ev),
-        Ok(())
-    );
+    let result = env.as_contract(&cid, || {
+        check_claim_fields(&env, 50_000_000, 50_000_000, &details, &ev)
+    });
+    assert_eq!(result, Ok(()));
 }
 
 #[test]
 fn details_at_max_len_passes() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let s: soroban_sdk::String = String::from_str(&env, &"a".repeat(DETAILS_MAX_LEN as usize));
     let ev = empty_evidence(&env);
-    assert_eq!(check_claim_fields(&env, 1, 100, &s, &ev), Ok(()));
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &s, &ev));
+    assert_eq!(result, Ok(()));
 }
 
 #[test]
@@ -234,6 +242,7 @@ fn details_over_max_len_rejected() {
 #[test]
 fn too_many_image_urls_rejected() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "x");
     let url = String::from_str(&env, "ipfs://Qm1");
     let mut ev = Vec::new(&env);
@@ -243,15 +252,14 @@ fn too_many_image_urls_rejected() {
             hash: non_zero_hash(&env),
         });
     }
-    assert_eq!(
-        check_claim_fields(&env, 1, 100, &details, &ev),
-        Err(Error::TooManyImageUrls)
-    );
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &details, &ev));
+    assert_eq!(result, Err(Error::TooManyImageUrls));
 }
 
 #[test]
 fn image_url_over_max_len_rejected() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "x");
     let long_url = String::from_str(&env, &"u".repeat(IMAGE_URL_MAX_LEN as usize + 1));
     let mut ev = Vec::new(&env);
@@ -259,25 +267,22 @@ fn image_url_over_max_len_rejected() {
         url: long_url,
         hash: non_zero_hash(&env),
     });
-    assert_eq!(
-        check_claim_fields(&env, 1, 100, &details, &ev),
-        Err(Error::ImageUrlTooLong)
-    );
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &details, &ev));
+    assert_eq!(result, Err(Error::ImageUrlTooLong));
 }
 
 #[test]
 fn evidence_sha256_all_zero_rejected() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "x");
     let mut ev = Vec::new(&env);
     ev.push_back(ClaimEvidenceEntry {
         url: String::from_str(&env, "ipfs://a"),
         hash: zero_hash(&env),
     });
-    assert_eq!(
-        check_claim_fields(&env, 1, 100, &details, &ev),
-        Err(Error::ExcessiveEvidenceBytes)
-    );
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &details, &ev));
+    assert_eq!(result, Err(Error::ExcessiveEvidenceBytes));
 }
 
 // ── Claim status / vote validation ───────────────────────────────────────────
@@ -339,6 +344,7 @@ fn claim_status_terminal_flags() {
 #[test]
 fn image_url_at_max_len_passes() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "x");
     let url_at_max = String::from_str(&env, &"u".repeat(IMAGE_URL_MAX_LEN as usize));
     let mut ev = Vec::new(&env);
@@ -346,7 +352,8 @@ fn image_url_at_max_len_passes() {
         url: url_at_max,
         hash: non_zero_hash(&env),
     });
-    assert_eq!(check_claim_fields(&env, 1, 100, &details, &ev), Ok(()));
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &details, &ev));
+    assert_eq!(result, Ok(()));
 }
 
 // ── safety_score boundary tests ───────────────────────────────────────────────
@@ -409,9 +416,11 @@ fn reason_empty_passes() {
 #[test]
 fn details_empty_passes() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let s = String::from_str(&env, "");
     let ev = empty_evidence(&env);
-    assert_eq!(check_claim_fields(&env, 1, 100, &s, &ev), Ok(()));
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &s, &ev));
+    assert_eq!(result, Ok(()));
 }
 
 // ── evidence count at max passes ──────────────────────────────────────────────
@@ -419,6 +428,7 @@ fn details_empty_passes() {
 #[test]
 fn evidence_at_max_count_passes() {
     let env = Env::default();
+    let cid = register_contract(&env);
     let details = String::from_str(&env, "x");
     let url = String::from_str(&env, "ipfs://Qm1");
     let mut ev = Vec::new(&env);
@@ -428,5 +438,6 @@ fn evidence_at_max_count_passes() {
             hash: non_zero_hash(&env),
         });
     }
-    assert_eq!(check_claim_fields(&env, 1, 100, &details, &ev), Ok(()));
+    let result = env.as_contract(&cid, || check_claim_fields(&env, 1, 100, &details, &ev));
+    assert_eq!(result, Ok(()));
 }
