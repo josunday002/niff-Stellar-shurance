@@ -19,7 +19,11 @@ export function createGraphqlSecurityPlugin(
 
       return {
         async didResolveOperation(context) {
-          guard.assertWithinLimits(context.document, context.request.variables);
+          guard.assertWithinLimits(
+            context.document,
+            context.request.variables,
+            context.schema,
+          );
         },
         async willSendResponse(context) {
           const durationMs = Date.now() - startedAt;
@@ -78,10 +82,14 @@ export function formatGraphqlError(
       : undefined;
 
   if (code === 'GRAPHQL_PARSE_FAILED' || code === 'GRAPHQL_VALIDATION_FAILED') {
+    const isDepth =
+      formattedError.message.includes('maximum operation depth') ||
+      formattedError.extensions?.limit === 'depth';
     return {
       message: formattedError.message,
       extensions: {
-        code,
+        code: isDepth ? 'GRAPHQL_DEPTH_LIMIT' : code,
+        ...(isDepth ? { limit: 'depth' } : {}),
         ...(requestId ? { requestId } : {}),
       },
     };

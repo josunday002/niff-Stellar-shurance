@@ -13,6 +13,7 @@ import { GraphqlWalletAuthGuard } from './graphql-wallet-auth.guard';
 import { GraphqlOperationGuardService } from './graphql-operation-guard.service';
 import { VotePubSubService } from './vote-pubsub.service';
 import { createGraphqlSecurityPlugin, formatGraphqlError } from './graphql-apollo.plugins';
+import { resolveGraphqlLimits } from './graphql-limits.util';
 import { ClaimsService } from '../claims/claims.service';
 import { PolicyReadService } from '../policy/policy-read.service';
 import { AuthIdentityService } from '../auth/auth-identity.service';
@@ -25,7 +26,9 @@ import type { GraphqlRequest } from './graphql.context';
 const configValues: Record<string, unknown> = {
   JWT_SECRET: 'graphql-test-secret-with-safe-length-1234567890',
   GRAPHQL_MAX_DEPTH: 6,
+  MAX_QUERY_DEPTH: 6,
   GRAPHQL_MAX_COMPLEXITY: 200,
+  MAX_QUERY_COMPLEXITY: 200,
   GRAPHQL_SLOW_OPERATION_MS: 1_000,
   GRAPHQL_RATE_LIMIT_MAX: 100,
   GRAPHQL_RATE_LIMIT_WINDOW_MS: 60_000,
@@ -121,6 +124,9 @@ describe('GraphQL integration', () => {
     const operationGuard = new GraphqlOperationGuardService(
       configServiceMock as unknown as ConfigService,
     );
+    const { maxDepth } = resolveGraphqlLimits(
+      configServiceMock as unknown as ConfigService,
+    );
 
     const moduleRef = await Test.createTestingModule({
       imports: [
@@ -140,7 +146,7 @@ describe('GraphQL integration', () => {
           plugins: [
             createGraphqlSecurityPlugin(operationGuard, metrics, logger, 1_000),
           ],
-          validationRules: [depthLimit(configValues.GRAPHQL_MAX_DEPTH as number)],
+          validationRules: [depthLimit(maxDepth)],
         }),
       ],
       providers: [
@@ -342,6 +348,158 @@ describe('GraphQL integration', () => {
     );
   });
 
+  it('allows a query at the configured depth limit', async () => {
+    policyReadServiceMock.getPolicyById.mockResolvedValue({
+      id: 'GHOLDER:1',
+      policyId: 1,
+      holderAddress: 'GHOLDER',
+      policyType: 'CROP',
+      region: 'NG-LA',
+      coverageAmount: '5000',
+      premium: '100',
+      isActive: true,
+      startLedger: 1,
+      endLedger: 100,
+      assetContractId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    claimsServiceMock.getClaimsByPolicyIds.mockResolvedValue(
+      new Map([['GHOLDER:1', [claimDto(1, 'GHOLDER:1')]]]),
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/graphql')
+      .send({
+        query: `
+          query {
+            policy(id: "GHOLDER:1") {
+              claims(first: 1) {
+                id
+                policy {
+                  id
+                }
+              }
+            }
+          }
+        `,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toBeUndefined();
+  });
+
+  it('rejects queries one level above the depth limit with 400', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/graphql')
+      .send({
+        query: `
+          query {
+            policy(id: "GHOLDER:1") {
+              claims(first: 1) {
+                policy {
+                  claims(first: 1) {
+                    policy {
+                      claims(first: 1) {
+                        policy {
+                          id
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        `,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.errors[0].extensions.code).toBe('GRAPHQL_DEPTH_LIMIT');
+    expect(response.body.errors[0].message).toMatch(/depth/i);
+  });
+
+  it('allows a query within the complexity limit', async () => {
+    policyReadServiceMock.getPolicyById.mockResolvedValue({
+      id: 'GHOLDER:1',
+      policyId: 1,
+      holderAddress: 'GHOLDER',
+      policyType: 'CROP',
+      region: 'NG-LA',
+      coverageAmount: '5000',
+      premium: '100',
+      isActive: true,
+      startLedger: 1,
+      endLedger: 100,
+      assetContractId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/graphql')
+      .send({
+        query: `
+          query {
+            policy(id: "GHOLDER:1") {
+              id
+            }
+          }
+        `,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toBeUndefined();
+  });
+
+  it('allows a representative dashboard query within depth and complexity limits', async () => {
+    policyReadServiceMock.listPolicies.mockResolvedValue({
+      items: [{
+        id: 'GHOLDER:1',
+        policyId: 1,
+        holderAddress: 'GHOLDER',
+        policyType: 'CROP',
+        region: 'NG-LA',
+        coverageAmount: '5000',
+        premium: '100',
+        isActive: true,
+        startLedger: 1,
+        endLedger: 100,
+        assetContractId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      nextCursor: null,
+      total: 1,
+    });
+    claimsServiceMock.getClaimsByPolicyIds.mockResolvedValue(
+      new Map([['GHOLDER:1', [claimDto(1, 'GHOLDER:1')]]]),
+    );
+
+    const response = await request(app.getHttpServer())
+      .post('/api/graphql')
+      .send({
+        query: `
+          query DashboardPolicies {
+            policies(first: 10) {
+              items {
+                id
+                policyType
+                claims(first: 5) {
+                  id
+                  status
+                }
+              }
+            }
+          }
+        `,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.errors).toBeUndefined();
+    expect(response.body.data.policies.items).toHaveLength(1);
+  });
+
   it('rejects maliciously deep queries deterministically', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/graphql')
@@ -367,9 +525,8 @@ describe('GraphQL integration', () => {
         `,
       });
 
-    // Apollo Server 5 returns HTTP 400 for validation errors (including depth limit)
     expect(response.status).toBe(400);
-    expect(response.body.errors[0].extensions.code).toBe('GRAPHQL_VALIDATION_FAILED');
+    expect(response.body.errors[0].extensions.code).toBe('GRAPHQL_DEPTH_LIMIT');
     expect(policyReadServiceMock.getPolicyById).not.toHaveBeenCalled();
     expect(claimsServiceMock.getClaimsByPolicyIds).not.toHaveBeenCalled();
   });
@@ -423,5 +580,121 @@ describe('GraphQL integration', () => {
     expect(response.body.errors[0].message).toBe('Internal server error');
     expect(response.body.errors[0].path).toBeUndefined();
     expect(JSON.stringify(response.body.errors[0])).not.toContain('policy.resolver.ts');
+  });
+});
+
+describe('GraphQL complexity limit (integration)', () => {
+  let app: INestApplication;
+  const savedComplexity = configValues.MAX_QUERY_COMPLEXITY;
+
+  beforeEach(async () => {
+    configValues.MAX_QUERY_COMPLEXITY = 2;
+    configValues.GRAPHQL_MAX_COMPLEXITY = 2;
+    jest.clearAllMocks();
+
+    const metrics = new MetricsService();
+    const logger = new AppLoggerService(configServiceMock as unknown as ConfigService);
+    const operationGuard = new GraphqlOperationGuardService(
+      configServiceMock as unknown as ConfigService,
+    );
+    const { maxDepth } = resolveGraphqlLimits(
+      configServiceMock as unknown as ConfigService,
+    );
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [
+        GraphQLModule.forRoot<ApolloDriverConfig>({
+          driver: ApolloDriver,
+          autoSchemaFile: true,
+          path: '/graphql',
+          useGlobalPrefix: true,
+          context: ({
+            req,
+            res,
+          }: {
+            req: GraphqlRequest;
+            res: Response;
+          }) => ({ req, res }),
+          formatError: formatGraphqlError,
+          plugins: [
+            createGraphqlSecurityPlugin(operationGuard, metrics, logger, 1_000),
+          ],
+          validationRules: [depthLimit(maxDepth)],
+        }),
+      ],
+      providers: [
+        PolicyResolver,
+        ClaimResolver,
+        GraphqlRateLimitGuard,
+        GraphqlWalletAuthGuard,
+        AuthIdentityService,
+        { provide: ConfigService, useValue: configServiceMock },
+        { provide: RedisService, useValue: redisServiceMock },
+        { provide: PolicyReadService, useValue: policyReadServiceMock },
+        { provide: ClaimsService, useValue: claimsServiceMock },
+        {
+          provide: VotePubSubService,
+          useValue: { pubSub: { asyncIterator: jest.fn() } },
+        },
+      ],
+    }).compile();
+
+    app = moduleRef.createNestApplication();
+    app.setGlobalPrefix('api');
+    await app.init();
+  });
+
+  afterEach(async () => {
+    configValues.MAX_QUERY_COMPLEXITY = savedComplexity;
+    configValues.GRAPHQL_MAX_COMPLEXITY = savedComplexity;
+    if (app) {
+      await app.close();
+    }
+  });
+
+  it('rejects queries above the complexity limit with 400', async () => {
+    policyReadServiceMock.listPolicies.mockResolvedValue({
+      items: [{
+        id: 'GHOLDER:1',
+        policyId: 1,
+        holderAddress: 'GHOLDER',
+        policyType: 'CROP',
+        region: 'NG-LA',
+        coverageAmount: '5000',
+        premium: '100',
+        isActive: true,
+        startLedger: 1,
+        endLedger: 100,
+        assetContractId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }],
+      nextCursor: null,
+      total: 1,
+    });
+
+    const response = await request(app.getHttpServer())
+      .post('/api/graphql')
+      .send({
+        query: `
+          query {
+            policies(first: 5) {
+              items {
+                id
+                claims(first: 5) {
+                  id
+                  policy {
+                    id
+                  }
+                }
+              }
+            }
+          }
+        `,
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.errors[0].extensions.code).toBe('GRAPHQL_COMPLEXITY_LIMIT');
+    expect(response.body.errors[0].message).toMatch(/complexity/i);
   });
 });

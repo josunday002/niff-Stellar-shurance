@@ -15,6 +15,7 @@ import { MetricsService } from '../metrics/metrics.service';
 import { PolicyModule } from '../policy/policy.module';
 import { ClaimResolver } from './claim.resolver';
 import { createGraphqlSecurityPlugin, formatGraphqlError } from './graphql-apollo.plugins';
+import { resolveGraphqlLimits } from './graphql-limits.util';
 import { GraphqlAdminAuthGuard } from './graphql-admin-auth.guard';
 import { GraphqlOperationGuardService } from './graphql-operation-guard.service';
 import { GraphqlRateLimitGuard } from './graphql-rate-limit.guard';
@@ -48,7 +49,7 @@ import type { GraphqlRequest } from './graphql.context';
         const allowIntrospection = !isProduction ||
           config.get<boolean>('GRAPHQL_INTROSPECTION_IN_PRODUCTION', false);
         const slowOperationMs = config.get<number>('GRAPHQL_SLOW_OPERATION_MS', 750);
-        const maxDepth = config.get<number>('GRAPHQL_MAX_DEPTH', 8);
+        const { maxDepth } = resolveGraphqlLimits(config);
         const logger = new AppLoggerService(config);
         const operationGuard = new GraphqlOperationGuardService(config);
         const plugins = [

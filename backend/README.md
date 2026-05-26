@@ -72,6 +72,7 @@ GraphQL is exposed at `/api/v1/graphql` (same global API version prefix).
 - Schema style: code-first (`src/graphql`)
 - Production introspection defaults to off
 - Apollo landing page is disabled in production
+- Depth and complexity limits: `MAX_QUERY_DEPTH` / `MAX_QUERY_COMPLEXITY` (fallback: `GRAPHQL_MAX_DEPTH` / `GRAPHQL_MAX_COMPLEXITY`). Breaches return HTTP 400 with `GRAPHQL_DEPTH_LIMIT` or `GRAPHQL_COMPLEXITY_LIMIT`.
 - See [`docs/graphql.md`](./docs/graphql.md)
 - Security sign-off checklist: [`docs/graphql-security-checklist.md`](./docs/graphql-security-checklist.md)
 

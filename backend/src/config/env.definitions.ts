@@ -73,6 +73,8 @@ export interface EnvironmentVariables {
   GRAPHQL_INTROSPECTION_IN_PRODUCTION: boolean;
   GRAPHQL_MAX_DEPTH: number;
   GRAPHQL_MAX_COMPLEXITY: number;
+  MAX_QUERY_DEPTH: number;
+  MAX_QUERY_COMPLEXITY: number;
   GRAPHQL_RATE_LIMIT_MAX: number;
   GRAPHQL_RATE_LIMIT_WINDOW_MS: number;
   GRAPHQL_SLOW_OPERATION_MS: number;
@@ -805,6 +807,24 @@ export const ENV_DEFINITIONS: EnvDefinitionMap = {
     example: '250',
     required: 'required',
     schema: Joi.number().integer().min(1).default(250),
+  },
+  MAX_QUERY_DEPTH: {
+    key: 'MAX_QUERY_DEPTH',
+    section: 'GraphQL',
+    description:
+      'Maximum GraphQL selection depth (overrides GRAPHQL_MAX_DEPTH when set).',
+    example: '8',
+    required: 'optional',
+    schema: Joi.number().integer().min(1).optional(),
+  },
+  MAX_QUERY_COMPLEXITY: {
+    key: 'MAX_QUERY_COMPLEXITY',
+    section: 'GraphQL',
+    description:
+      'Maximum GraphQL query complexity score (overrides GRAPHQL_MAX_COMPLEXITY when set).',
+    example: '250',
+    required: 'optional',
+    schema: Joi.number().integer().min(1).optional(),
   },
   GRAPHQL_RATE_LIMIT_MAX: {
     key: 'GRAPHQL_RATE_LIMIT_MAX',
