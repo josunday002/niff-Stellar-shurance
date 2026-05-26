@@ -25,6 +25,7 @@ import {
   scValToNative,
   xdr,
   Address,
+  Keypair,
 } from '@stellar/stellar-sdk';
 import { rpc as SorobanRpc } from '@stellar/stellar-sdk';
 import {
@@ -69,6 +70,12 @@ export interface BuildRenewalTransactionResult extends BuildTransactionResult {
   premiumXlm: string;
   /** Whether the premium was computed on-chain or via local fallback. */
   premiumSource: 'simulation' | 'local_fallback';
+}
+
+export interface FinalizeClaimResult {
+  txHash: string;
+  ledger: number;
+  onChainStatus: string;
 }
 
 @Injectable()
@@ -849,6 +856,106 @@ export class SorobanService {
       balanceStroops: balance.toString(),
       minResourceFee: success.minResourceFee ?? '0',
     };
+  }
+
+  /**
+   * Keeper: invoke on-chain `finalize_claim` for an expired claim.
+   * Requires CLAIM_KEEPER_SECRET_KEY and a funded source account.
+   */
+  async finalizeClaim(claimId: number): Promise<FinalizeClaimResult> {
+    return this.trackRpc('finalize_claim', () => this._finalizeClaim(claimId));
+  }
+
+  private async _finalizeClaim(claimId: number): Promise<FinalizeClaimResult> {
+    if (!this.contractId) {
+      throw new BadRequestException({
+        code: 'CONTRACT_NOT_INITIALIZED',
+        message: 'CONTRACT_ID is not configured; cannot finalize claims.',
+      });
+    }
+
+    const source =
+      this.configService.get<string>('CLAIM_KEEPER_SOURCE_ACCOUNT') ||
+      this.configService.get<string>('SOLVENCY_SIMULATION_SOURCE_ACCOUNT');
+    const secret = this.configService.get<string>('CLAIM_KEEPER_SECRET_KEY');
+
+    if (!source || !secret) {
+      throw new ServiceUnavailableException({
+        code: 'KEEPER_NOT_CONFIGURED',
+        message:
+          'Claim keeper is not configured (CLAIM_KEEPER_SOURCE_ACCOUNT / CLAIM_KEEPER_SECRET_KEY).',
+      });
+    }
+
+    const server = this.makeServer();
+    const account = await this.loadAccount(server, source);
+    const contract = new Contract(this.contractId);
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(
+        contract.call('finalize_claim', nativeToScVal(claimId, { type: 'u64' })),
+      )
+      .setTimeout(30)
+      .build();
+
+    const simulation = await server.simulateTransaction(tx);
+    if (Api.isSimulationError(simulation)) {
+      const err = simulation as SorobanRpc.Api.SimulateTransactionErrorResponse;
+      this.mapSimulationError(err.error);
+    }
+
+    const successSim = simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse;
+    const assembled = assembleTransaction(tx, successSim).build();
+    const keypair = Keypair.fromSecret(secret);
+    assembled.sign(keypair);
+
+    const sendResponse = await server.sendTransaction(assembled);
+    if (sendResponse.status === 'ERROR') {
+      throw new BadRequestException({
+        code: 'FINALIZE_CLAIM_REJECTED',
+        message: 'finalize_claim transaction was rejected by the network.',
+        details: sendResponse.errorResult,
+      });
+    }
+
+    const txHash = sendResponse.hash;
+    let ledger = 0;
+    let onChainStatus = 'Unknown';
+
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      const txResponse = await server.getTransaction(txHash);
+      if (txResponse.status === 'SUCCESS') {
+        ledger = txResponse.ledger;
+        const retval = txResponse.returnValue;
+        if (retval) {
+          const native = scValToNative(retval);
+          onChainStatus =
+            typeof native === 'object' && native !== null && 'tag' in (native as object)
+              ? String((native as { tag?: string }).tag)
+              : String(native);
+        }
+        break;
+      }
+      if (txResponse.status === 'FAILED') {
+        throw new BadRequestException({
+          code: 'FINALIZE_CLAIM_FAILED',
+          message: 'finalize_claim transaction failed on-chain.',
+        });
+      }
+    }
+
+    if (!ledger) {
+      throw new ServiceUnavailableException({
+        code: 'FINALIZE_CLAIM_TIMEOUT',
+        message: `Timed out waiting for finalize_claim confirmation (hash=${txHash}).`,
+      });
+    }
+
+    return { txHash, ledger, onChainStatus };
   }
 
   /**
