@@ -105,7 +105,7 @@ export function VoteTally({ claim, currentLedger, loading }: VoteTallyProps) {
         />
       </div>
 
-      <div className="flex justify-between text-sm">
+      <div className="flex justify-between text-sm" aria-live="polite" aria-atomic="true">
         <span className="text-green-700 font-medium">
           ✓ Approve — {approveCount} ({approvePct}%)
         </span>
