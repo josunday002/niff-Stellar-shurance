@@ -34,6 +34,7 @@ import { PrivacyService, PrivacyRequestType } from '../maintenance/privacy.servi
 import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { QueueMonitorService } from '../queues/queue-monitor.service';
 import { SolvencyMonitoringService } from '../maintenance/solvency-monitoring.service';
+import { AdminTenantsService, CreateTenantDto, UpdateTenantDto } from './admin-tenants.service';
 
 class PrivacyRequestDto {
   @IsString() subjectWalletAddress!: string;
@@ -61,6 +62,7 @@ export class AdminController {
     private readonly queueMonitor: QueueMonitorService,
     private readonly configService: ConfigService,
     private readonly solvencyMonitoringService: SolvencyMonitoringService,
+    private readonly tenantsService: AdminTenantsService,
   ) {}
 
   /**
@@ -418,5 +420,67 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return { queue, jobId, status: 'retried' };
+  }
+
+  // ── Tenant Provisioning ──────────────────────────────────────────────────
+
+  @Post('tenants')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a new tenant' })
+  async createTenant(@Body() dto: CreateTenantDto, @Req() req: AdminRequest) {
+    const actor = req.user?.walletAddress ?? 'unknown';
+    const tenant = await this.tenantsService.create(dto);
+    await this.auditService.write({
+      actor,
+      action: 'tenant_created',
+      payload: { tenantId: tenant.id, name: tenant.name, contractIds: tenant.contractIds },
+      ipAddress: req.ip,
+    });
+    return tenant;
+  }
+
+  @Get('tenants')
+  @ApiOperation({ summary: 'List all tenants' })
+  async listTenants() {
+    return this.tenantsService.findAll();
+  }
+
+  @Get('tenants/:id')
+  @ApiOperation({ summary: 'Get tenant by ID' })
+  async getTenant(@Param('id') id: string) {
+    return this.tenantsService.findOne(id);
+  }
+
+  @Patch('tenants/:id')
+  @ApiOperation({ summary: 'Update tenant' })
+  async updateTenant(
+    @Param('id') id: string,
+    @Body() dto: UpdateTenantDto,
+    @Req() req: AdminRequest,
+  ) {
+    const actor = req.user?.walletAddress ?? 'unknown';
+    const tenant = await this.tenantsService.update(id, dto);
+    await this.auditService.write({
+      actor,
+      action: 'tenant_updated',
+      payload: { tenantId: id, changes: dto },
+      ipAddress: req.ip,
+    });
+    return tenant;
+  }
+
+  @Delete('tenants/:id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Deactivate tenant (DELETE)' })
+  async deleteTenant(@Param('id') id: string, @Req() req: AdminRequest) {
+    const actor = req.user?.walletAddress ?? 'unknown';
+    const tenant = await this.tenantsService.delete(id);
+    await this.auditService.write({
+      actor,
+      action: 'tenant_deactivated',
+      payload: { tenantId: id },
+      ipAddress: req.ip,
+    });
+    return tenant;
   }
 }

@@ -291,6 +291,20 @@ model FaqStat {
   @@map("faq_stats")
 }
 
+/// Tenant provisioning configuration.
+model Tenant {
+  id          String   @id @default(uuid())
+  name        String
+  contractIds String[] // JSON array stored as text
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([active])
+  @@index([createdAt])
+  @@map("tenants")
+}
+
 enum TicketStatus {
   OPEN
   IN_PROGRESS
