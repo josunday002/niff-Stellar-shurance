@@ -6,6 +6,7 @@ mod calculator;
 mod claim;
 pub mod commit_reveal;
 pub mod events;
+pub mod governance;
 mod governance_token;
 mod ledger;
 pub mod policy;
@@ -28,6 +29,7 @@ use soroban_sdk::{contract, contractevent, contractimpl, panic_with_error, Addre
 #[contract]
 pub struct NiffyInsure;
 pub use admin::{AdminAction, AdminError, PendingAdminAction};
+pub use governance::{GovernanceError, Proposal};
 pub use policy::{PolicyError, RenewalError};
 pub use policy_lifecycle::PolicyError as LifecyclePolicyError;
 
@@ -473,6 +475,28 @@ impl NiffyInsure {
 
     pub fn get_voters(env: Env) -> Vec<Address> {
         storage::get_voters(&env)
+    }
+
+    pub fn create_proposal(
+        env: Env,
+        creator: Address,
+        param_key: soroban_sdk::String,
+        new_value: u32,
+    ) -> u64 {
+        governance::create_proposal(&env, creator, param_key, new_value)
+    }
+
+    pub fn vote_proposal(
+        env: Env,
+        voter: Address,
+        proposal_id: u64,
+        approve: bool,
+    ) -> Result<(), GovernanceError> {
+        governance::vote_proposal(&env, voter, proposal_id, approve)
+    }
+
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Option<Proposal> {
+        governance::get_proposal(&env, proposal_id)
     }
 
     pub fn voter_registry_len(env: Env) -> u32 {

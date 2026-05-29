@@ -106,6 +106,8 @@ pub enum DataKey {
     GovernanceTokenAddress,
     /// Future schema / migration version for governance-token config.
     GovernanceTokenConfigVersion,
+    /// Monotonic governance proposal id counter.
+    ProposalCounter,
     // ── Persistent tier ──────────────────────────────────────────────────
     Policy(Address, u32),
     PolicyCounter(Address),
@@ -159,6 +161,10 @@ pub enum DataKey {
     CommitRevealPhases(u64),
     /// Voter's 32-byte commitment hash: SHA-256(vote_byte || salt).
     VoteCommitment(u64, Address),
+    /// Governance parameter proposal.
+    Proposal(u64),
+    /// Whether a holder has voted on a governance proposal.
+    ProposalVote(u64, Address),
 }
 pub fn has_open_claim(env: &Env, holder: &Address, policy_id: u32) -> bool {
     env.storage()
@@ -492,6 +498,53 @@ pub fn get_voters(env: &Env) -> Vec<Address> {
         .instance()
         .get(&DataKey::Voters)
         .unwrap_or_else(|| Vec::new(env))
+}
+
+// ── Governance proposals ─────────────────────────────────────────────────────
+
+pub fn next_proposal_id(env: &Env) -> u64 {
+    let next = env
+        .storage()
+        .instance()
+        .get::<_, u64>(&DataKey::ProposalCounter)
+        .unwrap_or(0)
+        .saturating_add(1);
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposalCounter, &next);
+    next
+}
+
+pub fn set_proposal(env: &Env, proposal: &crate::governance::Proposal) {
+    let key = DataKey::Proposal(proposal.proposal_id);
+    env.storage().persistent().set(&key, proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn get_proposal(env: &Env, proposal_id: u64) -> Option<crate::governance::Proposal> {
+    env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+}
+
+pub fn remove_proposal(env: &Env, proposal_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Proposal(proposal_id));
+}
+
+pub fn set_proposal_vote(env: &Env, proposal_id: u64, voter: &Address, approve: bool) {
+    let key = DataKey::ProposalVote(proposal_id, voter.clone());
+    env.storage().persistent().set(&key, &approve);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn has_proposal_vote(env: &Env, proposal_id: u64, voter: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::ProposalVote(proposal_id, voter.clone()))
 }
 
 pub fn set_voters(env: &Env, voters: &Vec<Address>) {
