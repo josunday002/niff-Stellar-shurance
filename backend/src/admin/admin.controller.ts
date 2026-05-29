@@ -422,65 +422,77 @@ export class AdminController {
     return { queue, jobId, status: 'retried' };
   }
 
-  // ── Tenant Provisioning ──────────────────────────────────────────────────
-
-  @Post('tenants')
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create a new tenant' })
-  async createTenant(@Body() dto: CreateTenantDto, @Req() req: AdminRequest) {
-    const actor = req.user?.walletAddress ?? 'unknown';
-    const tenant = await this.tenantsService.create(dto);
-    await this.auditService.write({
-      actor,
-      action: 'tenant_created',
-      payload: { tenantId: tenant.id, name: tenant.name, contractIds: tenant.contractIds },
-      ipAddress: req.ip,
+  /**
+   * GET /admin/claims/search
+   *
+   * Search claims with full-text search and filtering.
+   * Supports: q (text search), status, claimant, policyId, dateFrom, dateTo
+   * Returns cursor-paginated results with total count.
+   */
+  @Get('claims/search')
+  @ApiOperation({ summary: 'Search claims with filters and full-text search' })
+  async searchClaims(
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('claimant') claimant?: string,
+    @Query('policyId') policyId?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('after') after?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.searchClaims({
+      q,
+      status,
+      claimant,
+      policyId,
+      dateFrom,
+      dateTo,
+      after,
+      limit: limit ? parseInt(limit, 10) : undefined,
     });
-    return tenant;
   }
 
-  @Get('tenants')
-  @ApiOperation({ summary: 'List all tenants' })
-  async listTenants() {
-    return this.tenantsService.findAll();
-  }
-
-  @Get('tenants/:id')
-  @ApiOperation({ summary: 'Get tenant by ID' })
-  async getTenant(@Param('id') id: string) {
-    return this.tenantsService.findOne(id);
-  }
-
-  @Patch('tenants/:id')
-  @ApiOperation({ summary: 'Update tenant' })
-  async updateTenant(
-    @Param('id') id: string,
-    @Body() dto: UpdateTenantDto,
+  /**
+   * GET /admin/policies/export
+   *
+   * Stream policies as CSV with optional filtering.
+   * Supports: status, holderAddress, policyType, dateFrom, dateTo
+   * Returns streaming CSV response.
+   */
+  @Get('policies/export')
+  @ApiOperation({ summary: 'Export policies as CSV with filters' })
+  async exportPolicies(
     @Req() req: AdminRequest,
+    @Res() res: Response,
+    @Query('status') status?: string,
+    @Query('holderAddress') holderAddress?: string,
+    @Query('policyType') policyType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
   ) {
     const actor = req.user?.walletAddress ?? 'unknown';
-    const tenant = await this.tenantsService.update(id, dto);
-    await this.auditService.write({
-      actor,
-      action: 'tenant_updated',
-      payload: { tenantId: id, changes: dto },
-      ipAddress: req.ip,
-    });
-    return tenant;
-  }
 
-  @Delete('tenants/:id')
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Deactivate tenant (DELETE)' })
-  async deleteTenant(@Param('id') id: string, @Req() req: AdminRequest) {
-    const actor = req.user?.walletAddress ?? 'unknown';
-    const tenant = await this.tenantsService.delete(id);
+    // Write audit log entry
     await this.auditService.write({
       actor,
-      action: 'tenant_deactivated',
-      payload: { tenantId: id },
+      action: 'policies_exported',
+      payload: { status, holderAddress, policyType, dateFrom, dateTo },
       ipAddress: req.ip,
     });
-    return tenant;
+
+    // Generate CSV
+    const csv = await this.adminService.exportPoliciesCSV({
+      status,
+      holderAddress,
+      policyType,
+      dateFrom,
+      dateTo,
+    });
+
+    // Stream response
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="policies.csv"');
+    res.send(csv);
   }
 }

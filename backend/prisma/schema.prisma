@@ -311,3 +311,17 @@ enum TicketStatus {
   RESOLVED
   CLOSED
 }
+
+/// Off-chain profile for a wallet holder. Created on first authenticated GET /profile.
+model HolderProfile {
+  walletAddress         String   @id @map("wallet_address")
+  displayName           String?  @map("display_name")
+  /// Stored as-is; anonymized by the privacy service on request.
+  email                 String?
+  locale                String?  @default("en")
+  notificationPreferences Json?  @default("{}") @map("notification_preferences")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("holder_profiles")
+}
