@@ -1,8 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { FeatureFlagsService } from '../feature-flags/feature-flags.service';
 import { Queue } from 'bullmq';
 import { getBullMQConnection } from '../redis/client';
+import { ClaimStatus, Prisma } from '@prisma/client';
 
 export interface BackfillJobInfo {
   jobId: string;
@@ -128,5 +129,34 @@ export class AdminService {
 
   async getFeatureFlags() {
     return this.prisma.featureFlag.findMany({ orderBy: { key: 'asc' } });
+  }
+
+  async getClaimForOverride(claimId: number) {
+    const claim = await this.prisma.claim.findUnique({ where: { id: claimId } });
+    if (!claim) {
+      throw new NotFoundException(`Claim ${claimId} not found`);
+    }
+    if (this.isTerminalClaimStatus(claim.status)) {
+      throw new BadRequestException({
+        code: 'TERMINAL_CLAIM_OVERRIDE_REJECTED',
+        message: `Claim ${claimId} is already terminal (${claim.status}) and cannot be overridden.`,
+      });
+    }
+    return claim;
+  }
+
+  async overrideClaimStatus(claimId: number, newStatus: ClaimStatus) {
+    await this.getClaimForOverride(claimId);
+    return this.prisma.claim.update({
+      where: { id: claimId },
+      data: {
+        status: newStatus,
+        isFinalized: this.isTerminalClaimStatus(newStatus),
+      } satisfies Prisma.ClaimUpdateInput,
+    });
+  }
+
+  private isTerminalClaimStatus(status: ClaimStatus): boolean {
+    return status === ClaimStatus.PAID || status === ClaimStatus.REJECTED;
   }
 }
