@@ -213,11 +213,33 @@ impl NiffyInsure {
     }
 
     /// Admin-only: add or remove an asset from the allowlist.
-    pub fn set_allowed_asset(env: Env, asset: Address, allowed: bool) {
+    /// Always emits `asset_set` (idempotent — even if the state is unchanged).
+    pub fn set_allowed_asset(
+        env: Env,
+        asset: Address,
+        allowed: bool,
+        symbol_hint: soroban_sdk::String,
+        decimals: u32,
+    ) {
         let _admin = admin::require_admin(&env);
         storage::bump_instance(&env);
         claim::set_allowed_asset(&env, &asset, allowed);
-        AllowedAssetUpdated { asset, allowed }.publish(&env);
+        AllowedAssetUpdated {
+            asset: asset.clone(),
+            allowed,
+        }
+        .publish(&env);
+        events::emit_asset_allowlisted(
+            &env,
+            &asset,
+            allowed,
+            if allowed {
+                symbol_hint
+            } else {
+                soroban_sdk::String::from_str(&env, "")
+            },
+            if allowed { decimals } else { 0 },
+        );
     }
 
     pub fn is_allowed_asset(env: Env, asset: Address) -> bool {
@@ -731,6 +753,17 @@ impl NiffyInsure {
     /// Read the current max evidence count (falls back to compile-time default when unset).
     pub fn get_max_evidence_count(env: Env) -> u32 {
         storage::get_max_evidence_count(&env)
+    }
+
+    /// Admin-only: update the allowlisted IPFS gateway URL prefixes for evidence validation.
+    /// Evidence URLs must start with `ipfs://` or one of the allowlisted gateway prefixes.
+    pub fn admin_set_gateway_allowlist(env: Env, gateways: Vec<String>) -> Result<(), AdminError> {
+        admin::set_gateway_allowlist(&env, gateways)
+    }
+
+    /// Read the current allowlisted IPFS gateway URL prefixes.
+    pub fn get_gateway_allowlist(env: Env) -> Vec<String> {
+        storage::get_gateway_allowlist(&env)
     }
 
     // ═════════════════════════════════════════════════════════════════════════════

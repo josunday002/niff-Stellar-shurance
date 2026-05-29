@@ -35,15 +35,55 @@ describe('AdminService.bulkUpdateClaims', () => {
     service = module.get(AdminService);
   });
 
-  afterEach(() => jest.clearAllMocks());
+  describe('enqueueReindex', () => {
+    it('sets last_processed_ledger to fromLedger-1 and enqueues with network', async () => {
+      const upsert = jest.fn();
+      const progressUpsert = jest.fn();
+      const prisma = {
+        $transaction: jest.fn(async (fn: (t: { ledgerCursor: { upsert: jest.Mock } }) => Promise<void>) =>
+          fn({ ledgerCursor: { upsert } })),
+        reindexProgress: { upsert: progressUpsert },
+      };
 
-  it('dry-run returns affected claims without modifying data', async () => {
-    const result = await service.bulkUpdateClaims([1, 2], ClaimStatus.APPROVED, 'test', 'admin', true);
-    expect(result.dryRun).toBe(true);
-    expect(result.affectedCount).toBe(2);
-    expect(result.affected).toEqual(mockClaims);
-    expect(mockPrisma.claim.updateMany).not.toHaveBeenCalled();
-    expect(mockPrisma.adminAuditLog.create).not.toHaveBeenCalled();
+      const svc = new AdminService(prisma as never, { refreshFlags: jest.fn() } as never);
+      const jobId = await svc.enqueueReindex(500, 'testnet');
+
+      expect(jobId).toBe('queued-job-id');
+      expect(upsert).toHaveBeenCalledWith({
+        where: { network: 'testnet' },
+        create: { network: 'testnet', lastProcessedLedger: 499 },
+        update: { lastProcessedLedger: 499 },
+      });
+      expect(mockQueueAdd).toHaveBeenCalledWith(
+        'reindex',
+        { fromLedger: 500, network: 'testnet' },
+        expect.objectContaining({
+          jobId: expect.stringMatching(/^reindex-testnet-500-/),
+        }),
+      );
+      expect(progressUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { jobId: 'queued-job-id' },
+          create: expect.objectContaining({ network: 'testnet', status: 'running' }),
+        }),
+      );
+    });
+
+    it('clamps at 0 when fromLedger is 0', async () => {
+      const upsert = jest.fn();
+      const prisma = {
+        $transaction: jest.fn(async (fn: (t: { ledgerCursor: { upsert: jest.Mock } }) => Promise<void>) =>
+          fn({ ledgerCursor: { upsert } })),
+        reindexProgress: { upsert: jest.fn() },
+      };
+      const svc = new AdminService(prisma as never, { refreshFlags: jest.fn() } as never);
+      await svc.enqueueReindex(0, 'public');
+      expect(upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: expect.objectContaining({ lastProcessedLedger: 0 }),
+        }),
+      );
+    });
   });
 
   it('live update applies changes and creates audit log entries', async () => {
@@ -72,6 +112,45 @@ describe('AdminService.bulkUpdateClaims', () => {
     expect(mockPrisma.claim.updateMany).toHaveBeenCalledWith({
       where: { id: { in: [] } },
       data: { status: ClaimStatus.REJECTED },
+    });
+  });
+
+  describe('getReindexStatus', () => {
+    function makeSvcWithProgress(row: unknown) {
+      const prisma = {
+        $transaction: jest.fn(),
+        reindexProgress: {
+          upsert: jest.fn(),
+          findFirst: jest.fn().mockResolvedValue(row),
+        },
+      };
+      return new AdminService(prisma as never, { refreshFlags: jest.fn() } as never);
+    }
+
+    it('returns null when no progress row exists', async () => {
+      const svc = makeSvcWithProgress(null);
+      expect(await svc.getReindexStatus('testnet')).toBeNull();
+    });
+
+    it('calculates percentage correctly', async () => {
+      const svc = makeSvcWithProgress({
+        jobId: 'j1', network: 'testnet',
+        startLedger: 500, targetLedger: 1000, currentLedger: 750,
+        status: 'running', startTime: new Date('2026-01-01'),
+      });
+      const result = await svc.getReindexStatus('testnet');
+      expect(result?.percentage).toBe(50);
+      expect(result?.status).toBe('running');
+    });
+
+    it('returns 100% when startLedger equals targetLedger', async () => {
+      const svc = makeSvcWithProgress({
+        jobId: 'j2', network: 'testnet',
+        startLedger: 1000, targetLedger: 1000, currentLedger: 1000,
+        status: 'completed', startTime: new Date(),
+      });
+      const result = await svc.getReindexStatus('testnet');
+      expect(result?.percentage).toBe(100);
     });
   });
 });

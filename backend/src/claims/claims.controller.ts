@@ -12,6 +12,8 @@ import {
   Body,
   Res,
   BadRequestException,
+  NotFoundException,
+  ForbiddenException,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
@@ -32,6 +34,7 @@ import { ClaimsListResponseDto, ClaimDetailResponseDto } from './dto/claim.dto';
 import { BuildClaimTransactionDto } from './dto/build-claim-transaction.dto';
 import { SubmitTransactionDto } from './dto/submit-transaction.dto';
 import { EvidenceUploadService } from './services/evidence-upload.service';
+import { EvidenceProxyService } from './services/evidence-proxy.service';
 import { EVIDENCE_MAX_BYTES_DEFAULT } from './dto/evidence-upload.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WalletAddress } from '../auth/decorators/wallet-address.decorator';
@@ -49,6 +52,7 @@ export class ClaimsController {
   constructor(
     private readonly claimsService: ClaimsService,
     private readonly evidenceUploadService: EvidenceUploadService,
+    private readonly evidenceProxyService: EvidenceProxyService,
   ) {}
 
   @Post('evidence/upload')
@@ -153,6 +157,22 @@ export class ClaimsController {
     @WalletAddress() walletAddress?: string,
   ): Promise<ClaimDetailResponseDto> {
     return this.claimsService.getClaimById(id, walletAddress);
+  }
+
+  @Get(':id/evidence/:index')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Download claim evidence file via authenticated IPFS proxy' })
+  @ApiResponse({ status: 200, description: 'Evidence file stream' })
+  @ApiResponse({ status: 403, description: 'Forbidden — not the claimant, a voter, or an admin' })
+  @ApiResponse({ status: 404, description: 'Claim or evidence index not found' })
+  async downloadEvidence(
+    @Param('id', ParseIntPipe) id: number,
+    @Param('index', ParseIntPipe) index: number,
+    @WalletAddress() walletAddress: string,
+    @Res() res: Response,
+  ): Promise<void> {
+    await this.evidenceProxyService.stream(id, index, walletAddress, res);
   }
 
   @Post('build-transaction')
