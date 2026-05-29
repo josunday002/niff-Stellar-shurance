@@ -9,7 +9,9 @@
 ///
 /// Production deployments SHOULD use a Stellar multisig account as admin.
 /// See SECURITY.md for the full threat matrix and multisig setup guidance.
-use soroban_sdk::{contracterror, contractevent, contracttype, panic_with_error, Address, Env};
+use soroban_sdk::{
+    contracterror, contractevent, contracttype, panic_with_error, Address, Env, Map, String,
+};
 
 use crate::storage;
 
@@ -130,6 +132,23 @@ pub struct PendingAdminAction {
     pub proposer: Address,
     pub action: AdminAction,
     pub expiry_ledger: u32,
+}
+
+#[contractevent(topics = ["niffyinsure", "admin_action"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminActionAudit {
+    pub actor: Address,
+    pub action_type: String,
+    pub params: Map<String, String>,
+}
+
+pub fn emit_admin_action(env: &Env, actor: &Address, action_type: &str) {
+    AdminActionAudit {
+        actor: actor.clone(),
+        action_type: String::from_str(env, action_type),
+        params: Map::new(env),
+    }
+    .publish(env);
 }
 
 #[contractevent(topics = ["niffyinsure", "admin_action_proposed"])]
@@ -256,12 +275,13 @@ pub fn propose_admin_action(env: &Env, action: AdminAction) {
 
     let action_id = now;
     AdminActionProposed {
-        proposer,
+        proposer: proposer.clone(),
         action_id,
         expiry_ledger: expiry,
         action,
     }
     .publish(env);
+    emit_admin_action(env, &proposer, "propose_admin_action");
 }
 
 /// Confirm and execute a pending admin action.
@@ -322,10 +342,11 @@ pub fn confirm_admin_action(env: &Env, confirmer: Address) {
     storage::clear_pending_admin_action(env);
     AdminActionConfirmed {
         proposer: pending.proposer,
-        confirmer,
+        confirmer: confirmer.clone(),
         action: pending.action,
     }
     .publish(env);
+    emit_admin_action(env, &confirmer, "confirm_admin_action");
 }
 
 /// Cancel a pending admin action. Proposer (current admin) authorizes.
@@ -337,6 +358,7 @@ pub fn cancel_admin_action(env: &Env) {
         panic_with_error!(env, AdminError::Unauthorized);
     }
     storage::clear_pending_admin_action(env);
+    emit_admin_action(env, &proposer, "cancel_admin_action");
 }
 
 /// Propose a new admin (step 1 of two-step rotation). Current admin must authorize.
@@ -344,10 +366,11 @@ pub fn propose_admin(env: &Env, new_admin: Address) {
     let current = require_admin(env);
     storage::set_pending_admin(env, &new_admin);
     AdminProposed {
-        old_admin: current,
+        old_admin: current.clone(),
         new_admin,
     }
     .publish(env);
+    emit_admin_action(env, &current, "propose_admin");
 }
 
 /// Accept a pending admin proposal. The *pending* admin must authorize.
@@ -361,9 +384,10 @@ pub fn accept_admin(env: &Env) {
     storage::clear_pending_admin(env);
     AdminAccepted {
         old_admin,
-        new_admin: pending,
+        new_admin: pending.clone(),
     }
     .publish(env);
+    emit_admin_action(env, &pending, "accept_admin");
 }
 
 /// Cancel a pending admin proposal. Current admin must authorize.
@@ -373,15 +397,16 @@ pub fn cancel_admin(env: &Env) {
         .unwrap_or_else(|| panic_with_error!(env, AdminError::NoPendingAdmin));
     storage::clear_pending_admin(env);
     AdminCancelled {
-        current_admin: current,
+        current_admin: current.clone(),
         cancelled_pending: pending,
     }
     .publish(env);
+    emit_admin_action(env, &current, "cancel_admin");
 }
 
 /// Update the treasury token contract address. Admin must authorize.
 pub fn set_token(env: &Env, new_token: Address) {
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     let old_token = storage::get_token(env);
     storage::set_token(env, &new_token);
     TokenUpdated {
@@ -389,13 +414,14 @@ pub fn set_token(env: &Env, new_token: Address) {
         new_token,
     }
     .publish(env);
+    emit_admin_action(env, &admin, "set_token");
 }
 
 /// Update the treasury address. Admin must authorize.
 /// Emits: (\"admin\", \"treasury\") → (old_treasury, new_treasury)
 /// *** SINGLE-STEP FALLBACK: Use propose_admin_action for two-step protection ***
 pub fn set_treasury(env: &Env, new_treasury: Address) {
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     let old_treasury = storage::get_treasury(env);
     storage::set_treasury(env, &new_treasury);
     TreasuryUpdated {
@@ -403,20 +429,29 @@ pub fn set_treasury(env: &Env, new_treasury: Address) {
         new_treasury,
     }
     .publish(env);
+    emit_admin_action(env, &admin, "set_treasury");
 }
 
 /// Pause the contract. Admin must authorize.
 pub fn pause(env: &Env) {
     let admin = require_admin(env);
     storage::set_paused(env, true);
-    AdminPaused { admin }.publish(env);
+    AdminPaused {
+        admin: admin.clone(),
+    }
+    .publish(env);
+    emit_admin_action(env, &admin, "pause");
 }
 
 /// Unpause the contract. Admin must authorize.
 pub fn unpause(env: &Env) {
     let admin = require_admin(env);
     storage::set_paused(env, false);
-    AdminUnpaused { admin }.publish(env);
+    AdminUnpaused {
+        admin: admin.clone(),
+    }
+    .publish(env);
+    emit_admin_action(env, &admin, "unpause");
 }
 
 /// Drain `amount` stroops from the contract treasury to `recipient`.
@@ -428,11 +463,12 @@ pub fn drain(env: &Env, recipient: Address, amount: i128) {
     }
     crate::token::transfer_from_contract(env, &recipient, amount);
     TreasuryDrained {
-        admin,
+        admin: admin.clone(),
         recipient,
         amount,
     }
     .publish(env);
+    emit_admin_action(env, &admin, "drain");
 }
 
 /// Emergency token sweep: recover mistakenly sent tokens with strict ethical constraints.
@@ -447,9 +483,10 @@ pub fn drain(env: &Env, recipient: Address, amount: i128) {
 /// See full docs above.
 pub fn sweep_token(env: &Env, asset: Address, recipient: Address, amount: i128, reason_code: u32) {
     storage::bump_instance(env);
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     // ... (existing validation logic)
     sweep_token_inner(env, asset, recipient, amount, reason_code);
+    emit_admin_action(env, &admin, "sweep_token");
 }
 
 fn sweep_token_inner(
@@ -558,16 +595,18 @@ fn calculate_protected_balance(env: &Env, asset: &Address) -> i128 {
 /// Set per-transaction sweep cap (optional safety limit).
 /// Set to None to disable cap. Admin must authorize.
 pub fn set_sweep_cap(env: &Env, cap: Option<i128>) {
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     storage::set_sweep_cap(env, cap);
+    emit_admin_action(env, &admin, "set_sweep_cap");
 }
 
 /// Set the on-chain notice period (in ledgers) that must elapse between a sweep
 /// proposal and its execution. Set to 0 to disable (not recommended for mainnet).
 /// Admin must authorize.
 pub fn set_sweep_notice_period(env: &Env, ledgers: u32) {
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     storage::set_sweep_notice_period_ledgers(env, ledgers);
+    emit_admin_action(env, &admin, "set_sweep_notice_period");
 }
 
 #[contractevent(topics = ["niffyinsure", "max_evidence_count_updated"])]
@@ -582,7 +621,7 @@ pub struct MaxEvidenceCountUpdated {
 /// Bounded by [`storage::MAX_EVIDENCE_COUNT_HARD_MAX`] to prevent griefing.
 /// Reductions do NOT retroactively invalidate existing claims.
 pub fn set_max_evidence_count(env: &Env, new_count: u32) -> Result<(), AdminError> {
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     if new_count > storage::MAX_EVIDENCE_COUNT_HARD_MAX {
         return Err(AdminError::MaxEvidenceCountOutOfBounds);
     }
@@ -593,6 +632,7 @@ pub fn set_max_evidence_count(env: &Env, new_count: u32) -> Result<(), AdminErro
         new_count,
     }
     .publish(env);
+    emit_admin_action(env, &admin, "admin_set_max_evidence_count");
     Ok(())
 }
 
@@ -607,11 +647,12 @@ pub struct GatewayAllowlistUpdated {
 /// Evidence URLs must start with `ipfs://` or one of the allowlisted gateway prefixes.
 /// Pass an empty vector to disable gateway validation (only `ipfs://` allowed).
 pub fn set_gateway_allowlist(env: &Env, gateways: Vec<String>) -> Result<(), AdminError> {
-    let _admin = require_admin(env);
+    let admin = require_admin(env);
     storage::set_gateway_allowlist(env, &gateways);
     GatewayAllowlistUpdated {
         gateway_count: gateways.len(),
     }
     .publish(env);
+    emit_admin_action(env, &admin, "admin_set_gateway_allowlist");
     Ok(())
 }

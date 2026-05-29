@@ -87,6 +87,7 @@ impl NiffyInsure {
         storage::set_allowed_asset(&env, &token, true);
         storage::set_voting_duration_ledgers(&env, ledger::VOTE_WINDOW_LEDGERS);
         storage::set_quorum_bps(&env, types::DEFAULT_QUORUM_BPS);
+        admin::emit_admin_action(&env, &admin, "initialize");
         Ok(())
     }
 
@@ -216,7 +217,11 @@ impl NiffyInsure {
     ) -> Result<(), validate::Error> {
         let admin = storage::get_admin(&env);
         admin.require_auth();
-        premium::update_multiplier_table(&env, &new_table)
+        let result = premium::update_multiplier_table(&env, &new_table);
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "update_multiplier_table");
+        }
+        result
     }
 
     /// Admin-only: update a single multiplier entry without redeploying the contract.
@@ -235,7 +240,11 @@ impl NiffyInsure {
         let admin = storage::get_admin(&env);
         admin.require_auth();
         storage::bump_instance(&env);
-        premium::admin_set_premium_multiplier(&env, key, value)
+        let result = premium::admin_set_premium_multiplier(&env, key, value);
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "admin_set_premium_multiplier");
+        }
+        result
     }
 
     pub fn get_multiplier_table(env: Env) -> types::MultiplierTable {
@@ -251,7 +260,7 @@ impl NiffyInsure {
         symbol_hint: soroban_sdk::String,
         decimals: u32,
     ) {
-        let _admin = admin::require_admin(&env);
+        let admin = admin::require_admin(&env);
         storage::bump_instance(&env);
         claim::set_allowed_asset(&env, &asset, allowed);
         AllowedAssetUpdated {
@@ -270,6 +279,7 @@ impl NiffyInsure {
             },
             if allowed { decimals } else { 0 },
         );
+        admin::emit_admin_action(&env, &admin, "set_allowed_asset");
     }
 
     pub fn is_allowed_asset(env: Env, asset: Address) -> bool {
@@ -359,6 +369,7 @@ impl NiffyInsure {
         admin.require_auth();
         ledger::validate_voting_duration_ledgers(ledgers)?;
         storage::set_voting_duration_ledgers(&env, ledgers);
+        admin::emit_admin_action(&env, &admin, "admin_set_vote_duration_ledgers");
         Ok(())
     }
 
@@ -384,6 +395,7 @@ impl NiffyInsure {
             new_bps: quorum_bps,
         }
         .publish(&env);
+        admin::emit_admin_action(&env, &admin, "admin_set_quorum_bps");
         Ok(())
     }
 
@@ -403,7 +415,11 @@ impl NiffyInsure {
     pub fn process_claim(env: Env, claim_id: u64) -> Result<(), validate::Error> {
         let admin = storage::get_admin(&env);
         admin.require_auth();
-        claim::process_claim(&env, claim_id)
+        let result = claim::process_claim(&env, claim_id);
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "process_claim");
+        }
+        result
     }
 
     pub fn get_claim(env: Env, claim_id: u64) -> Result<types::Claim, validate::Error> {
@@ -475,6 +491,7 @@ impl NiffyInsure {
         let admin = storage::get_admin(&env);
         admin.require_auth();
         storage::set_calc_address(&env, &calculator);
+        admin::emit_admin_action(&env, &admin, "set_calculator");
     }
 
     pub fn clear_calculator(env: Env) {
@@ -483,6 +500,7 @@ impl NiffyInsure {
         env.storage()
             .instance()
             .remove(&storage::DataKey::CalcAddress);
+        admin::emit_admin_action(&env, &admin, "clear_calculator");
     }
 
     pub fn get_calculator(env: Env) -> Option<Address> {
@@ -682,14 +700,18 @@ impl NiffyInsure {
         reason: types::TerminationReason,
         allow_open_claims: bool,
     ) -> Result<(), policy_lifecycle::PolicyError> {
-        policy_lifecycle::admin_terminate_policy(
+        let result = policy_lifecycle::admin_terminate_policy(
             &env,
-            admin,
+            admin.clone(),
             holder,
             policy_id,
             reason,
             allow_open_claims,
-        )
+        );
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "admin_terminate_policy");
+        }
+        result
     }
 
     pub fn propose_admin(env: Env, new_admin: Address) {
@@ -821,8 +843,12 @@ impl NiffyInsure {
         asset: Address,
         table: Option<types::MultiplierTable>,
     ) -> Result<(), validate::Error> {
-        admin::require_admin(&env);
-        premium::admin_set_asset_premium_table(&env, &asset, table)
+        let admin = admin::require_admin(&env);
+        let result = premium::admin_set_asset_premium_table(&env, &asset, table);
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "admin_set_asset_premium_table");
+        }
+        result
     }
 
     /// Read the asset-specific multiplier table for `asset`.
@@ -856,13 +882,14 @@ impl NiffyInsure {
 
         let flags = storage::get_pause_flags(&env);
         PauseToggled {
-            admin,
+            admin: admin.clone(),
             paused: true,
             reason_code,
             bind_paused: flags.bind_paused,
             claims_paused: flags.claims_paused,
         }
         .publish(&env);
+        admin::emit_admin_action(&env, &admin, "pause");
     }
 
     /// Unpause the contract with optional reason code.
@@ -876,13 +903,14 @@ impl NiffyInsure {
 
         let flags = storage::get_pause_flags(&env);
         PauseToggled {
-            admin,
+            admin: admin.clone(),
             paused: false,
             reason_code,
             bind_paused: flags.bind_paused,
             claims_paused: flags.claims_paused,
         }
         .publish(&env);
+        admin::emit_admin_action(&env, &admin, "unpause");
     }
 
     /// Granular pause: pause only policy binding (initiate/renew).
@@ -896,13 +924,14 @@ impl NiffyInsure {
         storage::set_pause_flags(&env, &flags);
 
         PauseToggled {
-            admin,
+            admin: admin.clone(),
             paused: true,
             reason_code,
             bind_paused: flags.bind_paused,
             claims_paused: flags.claims_paused,
         }
         .publish(&env);
+        admin::emit_admin_action(&env, &admin, "pause_bind");
     }
 
     /// Granular pause: pause only claims (file/vote/finalize).
@@ -916,13 +945,14 @@ impl NiffyInsure {
         storage::set_pause_flags(&env, &flags);
 
         PauseToggled {
-            admin,
+            admin: admin.clone(),
             paused: true,
             reason_code,
             bind_paused: flags.bind_paused,
             claims_paused: flags.claims_paused,
         }
         .publish(&env);
+        admin::emit_admin_action(&env, &admin, "pause_claims");
     }
 
     /// Get current pause state (legacy - true if ANY pause flag is set).
@@ -966,8 +996,12 @@ impl NiffyInsure {
 
     /// Admin: set rolling claim cap. Bounded unless `i128::MAX` (uncapped). Emits `ClaimCapUpdated`.
     pub fn set_rolling_claim_cap(env: Env, new_cap: i128) -> Result<(), AdminError> {
-        let _admin = admin::require_admin(&env);
-        rolling_claim_cap::try_set_cap(&env, new_cap)
+        let admin = admin::require_admin(&env);
+        let result = rolling_claim_cap::try_set_cap(&env, new_cap);
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "set_rolling_claim_cap");
+        }
+        result
     }
 
     /// Admin: set rolling window length in ledgers. Emits `RollingClaimWindowLedgersUpdated`.
@@ -975,8 +1009,12 @@ impl NiffyInsure {
         env: Env,
         window_ledgers: u32,
     ) -> Result<(), AdminError> {
-        let _admin = admin::require_admin(&env);
-        rolling_claim_cap::try_set_window_ledgers(&env, window_ledgers)
+        let admin = admin::require_admin(&env);
+        let result = rolling_claim_cap::try_set_window_ledgers(&env, window_ledgers);
+        if result.is_ok() {
+            admin::emit_admin_action(&env, &admin, "set_rolling_claim_window_ledgers");
+        }
+        result
     }
 }
 
@@ -1016,8 +1054,9 @@ impl NiffyInsure {
 
     /// Admin: set the TTL alert threshold for expiry notifications.
     pub fn set_ttl_alert_threshold(env: Env, threshold: u32) -> Result<(), AdminError> {
-        let _admin = admin::require_admin(&env);
+        let admin = admin::require_admin(&env);
         storage::set_ttl_alert_threshold(&env, threshold);
+        admin::emit_admin_action(&env, &admin, "set_ttl_alert_threshold");
         Ok(())
     }
 
@@ -1042,6 +1081,7 @@ impl NiffyInsure {
         assert!(admin == stored, "only admin");
         storage::bump_instance(&env);
         governance_token::set_governance_token_runtime_enabled(&env, enabled);
+        admin::emit_admin_action(&env, &admin, "gov_set_token_runtime_enabled");
     }
 
     pub fn gov_token_address(env: Env) -> Option<Address> {
@@ -1054,6 +1094,7 @@ impl NiffyInsure {
         assert!(admin == stored, "only admin");
         storage::bump_instance(&env);
         governance_token::set_governance_token_address(&env, &token);
+        admin::emit_admin_action(&env, &admin, "gov_set_token_address_stub");
     }
 }
 
@@ -1124,5 +1165,6 @@ impl NiffyInsure {
         admin.require_auth();
         assert!(admin == expected, "only admin can set open claim count");
         storage::set_open_claim(&env, &holder, policy_id, open_claim_count > 0);
+        admin::emit_admin_action(&env, &admin, "admin_set_open_claim_count");
     }
 }

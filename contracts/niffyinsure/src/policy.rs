@@ -445,7 +445,7 @@ pub struct GracePeriodUpdated {
 }
 
 pub fn set_grace_period_ledgers(env: &Env, ledgers: u32) -> Result<(), RenewalError> {
-    crate::admin::require_admin(env);
+    let admin = crate::admin::require_admin(env);
     if !ledger::is_valid_grace_period_ledgers(ledgers) {
         return Err(RenewalError::GracePeriodOutOfBounds);
     }
@@ -456,6 +456,7 @@ pub fn set_grace_period_ledgers(env: &Env, ledgers: u32) -> Result<(), RenewalEr
         new_ledgers: ledgers,
     }
     .publish(env);
+    crate::admin::emit_admin_action(env, &admin, "set_grace_period_ledgers");
     Ok(())
 }
 

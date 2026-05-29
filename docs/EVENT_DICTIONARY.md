@@ -34,6 +34,34 @@ The indexer discriminates events by `${topic[0]}:${topic[1]}`.
 
 ---
 
+## Admin Audit Event (`namespace = "niffyinsure"`)
+
+### `admin_action` — immutable admin audit trail
+
+Emitted after every successful admin-authenticated entrypoint. Failed or unauthorized calls do not emit this event.
+
+**Topics:** `("niffyinsure", "admin_action")`
+
+```json
+{
+  "actor": "G...",
+  "action_type": "set_token",
+  "params": {}
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `actor` | string (G...) | Authenticated account that authorized the admin operation |
+| `action_type` | string | Stable machine-readable action name |
+| `params` | object | String-keyed parameter map; currently emitted as `{}` to preserve the schema while avoiding address/string encoding ambiguity |
+
+Stable `action_type` values:
+
+`initialize`, `update_multiplier_table`, `admin_set_premium_multiplier`, `set_allowed_asset`, `admin_set_vote_duration_ledgers`, `admin_set_quorum_bps`, `set_grace_period_ledgers`, `process_claim`, `set_calculator`, `clear_calculator`, `admin_terminate_policy`, `propose_admin`, `accept_admin`, `cancel_admin`, `propose_admin_action`, `confirm_admin_action`, `cancel_admin_action`, `set_token`, `set_treasury`, `drain`, `sweep_token`, `set_sweep_cap`, `set_sweep_notice_period`, `admin_set_max_evidence_count`, `admin_set_gateway_allowlist`, `admin_set_asset_premium_table`, `pause`, `unpause`, `pause_bind`, `pause_claims`, `set_rolling_claim_cap`, `set_rolling_claim_window_ledgers`, `set_ttl_alert_threshold`, `gov_set_token_runtime_enabled`, `gov_set_token_address_stub`, `admin_set_open_claim_count`.
+
+---
+
 ## Claim events  (`namespace = "niffyins"`)
 
 ### `clm_filed` — claim filed
