@@ -34,6 +34,7 @@ import { PrivacyService, PrivacyRequestType } from '../maintenance/privacy.servi
 import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { QueueMonitorService } from '../queues/queue-monitor.service';
 import { SolvencyMonitoringService } from '../maintenance/solvency-monitoring.service';
+import { getDeadLetterJobs, replayDeadLetterJob } from '../webhooks/queue';
 
 class PrivacyRequestDto {
   @IsString() subjectWalletAddress!: string;
@@ -418,5 +419,53 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return { queue, jobId, status: 'retried' };
+  }
+
+  /**
+   * GET /admin/webhooks/dead-letter
+   *
+   * Lists all permanently failed webhook deliveries (jobs that exhausted all
+   * MAX_WEBHOOK_ATTEMPTS retries). These are the dead-letter entries.
+   *
+   * Query params:
+   *   limit — max records to return (default 100).
+   */
+  @Get('webhooks/dead-letter')
+  @ApiOperation({ summary: 'List permanently failed webhook deliveries (dead-letter queue)' })
+  async getWebhookDeadLetter(@Query('limit') limitParam?: string) {
+    const limit = limitParam ? Math.min(parseInt(limitParam, 10), 500) : 100;
+    const jobs = await getDeadLetterJobs(limit);
+    return { total: jobs.length, jobs };
+  }
+
+  /**
+   * POST /admin/webhooks/dead-letter/:id/replay
+   *
+   * Manually replay a permanently failed webhook delivery.
+   * Resets the job's attempt count and re-queues it for delivery.
+   * Writes an immutable audit row.
+   */
+  @Post('webhooks/dead-letter/:id/replay')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({ summary: 'Replay a dead-letter webhook delivery by job ID' })
+  async replayWebhookDeadLetter(
+    @Param('id') jobId: string,
+    @Req() req: AdminRequest,
+  ) {
+    try {
+      await replayDeadLetterJob(jobId);
+    } catch (err) {
+      throw new NotFoundException(
+        err instanceof Error ? err.message : `Dead-letter job ${jobId} not found`,
+      );
+    }
+    const actor = req.user?.walletAddress ?? 'unknown';
+    await this.auditService.write({
+      actor,
+      action: 'webhook_dlq_replayed',
+      payload: { jobId },
+      ipAddress: req.ip,
+    });
+    return { jobId, status: 'replayed' };
   }
 }
