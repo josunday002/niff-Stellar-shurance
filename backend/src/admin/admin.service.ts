@@ -249,10 +249,20 @@ export class AdminService {
   }
 
   async setFeatureFlag(key: string, enabled: boolean, description: string | undefined, actor: string) {
+    this.featureFlagsService.assertAllowlisted(key);
     const result = await this.prisma.featureFlag.upsert({
       where: { key },
       create: { key, enabled, description, updatedBy: actor },
       update: { enabled, description, updatedBy: actor },
+    });
+    await this.featureFlagsService.refreshFlags();
+    return result;
+  }
+
+  async createFeatureFlag(key: string, enabled: boolean, description: string | undefined, actor: string) {
+    this.featureFlagsService.assertAllowlisted(key);
+    const result = await this.prisma.featureFlag.create({
+      data: { key, enabled, description: description ?? null, updatedBy: actor },
     });
     await this.featureFlagsService.refreshFlags();
     return result;

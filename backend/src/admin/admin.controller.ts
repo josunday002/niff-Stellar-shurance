@@ -25,6 +25,7 @@ import { AdminRoleGuard } from './guards/admin-role.guard';
 import { AdminService } from './admin.service';
 import { AdminPoliciesService } from './admin-policies.service';
 import { AuditService } from './audit.service';
+import { AdminStatsService } from './admin-stats.service';
 import { ReindexDto } from './dto/reindex.dto';
 import { BackfillDto } from './dto/backfill.dto';
 import { AuditQueryDto } from './dto/audit-query.dto';
@@ -64,6 +65,20 @@ export class AdminController {
     private readonly solvencyMonitoringService: SolvencyMonitoringService,
     private readonly tenantsService: AdminTenantsService,
   ) {}
+
+  /**
+   * GET /admin/stats
+   *
+   * Aggregated platform metrics: policy counts, claim counts by status,
+   * treasury balance (from Redis solvency snapshot), and indexer lag.
+   * Response is cached in Redis with a short TTL (default: 30s).
+   */
+  @Get('stats')
+  @ApiOperation({ summary: 'Aggregated platform metrics (cached)' })
+  async getStats(@Req() req: AdminRequest) {
+    const tenantId = (req as unknown as { tenantId?: string }).tenantId;
+    return this.adminStatsService.getStats(tenantId);
+  }
 
   /**
    * POST /admin/reindex
@@ -269,6 +284,27 @@ export class AdminController {
   @ApiOperation({ summary: 'List all feature flags' })
   async listFeatureFlags() {
     return this.adminService.getFeatureFlags();
+  }
+
+  /**
+   * POST /admin/feature-flags
+   *
+   * Creates a new feature flag. Key must be in the predefined allowlist.
+   * Writes an immutable audit row.
+   */
+  @Post('feature-flags')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a new feature flag (allowlisted keys only)' })
+  async createFeatureFlag(@Body() dto: FeatureFlagDto & { key: string }, @Req() req: AdminRequest) {
+    const actor = req.user?.walletAddress ?? 'unknown';
+    const flag = await this.adminService.createFeatureFlag(dto.key, dto.enabled, dto.description, actor);
+    await this.auditService.write({
+      actor,
+      action: 'feature_flag_create',
+      payload: { key: dto.key, enabled: dto.enabled, description: dto.description },
+      ipAddress: req.ip,
+    });
+    return flag;
   }
 
   /**

@@ -13,6 +13,7 @@ import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { QueueMonitorService } from '../queues/queue-monitor.service';
 import { BullBoardMiddleware } from './bull-board.middleware';
 import { MetricsModule } from '../metrics/metrics.module';
+import { CacheModule } from '../cache/cache.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { MetricsModule } from '../metrics/metrics.module';
     MaintenanceModule,
     RateLimitModule,
     MetricsModule,
+    CacheModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
