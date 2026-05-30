@@ -327,6 +327,13 @@ export class IndexerService {
     const contractId = event.contractId?.toString() ?? '';
 
     await this.prisma.$transaction(async (tx) => {
+      // Detect duplicate before upsert: Prisma upsert doesn't expose whether
+      // it created or updated, so we check existence first.
+      const existing = await tx.rawEvent.findUnique({
+        where: { txHash_eventIndex: { txHash, eventIndex: index } },
+        select: { txHash: true },
+      });
+
       await tx.rawEvent.upsert({
         where: { txHash_eventIndex: { txHash, eventIndex: index } },
         create: {
@@ -343,6 +350,12 @@ export class IndexerService {
         },
         update: {},
       });
+
+      if (existing) {
+        this.metrics?.recordDuplicateEvent({ eventType: 'raw_event', network });
+        await this.advanceCursorInTx(tx, network, event.ledger);
+        return;
+      }
 
       // Use the versioned parser registry for deterministic event routing.
       const parser = selectParser(contractId, event.ledger);
@@ -375,7 +388,7 @@ export class IndexerService {
       ) {
         await this.handleClaimFiled(tx, dataNative, event);
       } else if (mainTopic === 'vote') {
-        await this.handleVoteCast(tx, topics, dataNative as EventPayload, event);
+        await this.handleVoteCast(tx, topics, dataNative as EventPayload, event, network);
       } else if (
         mainTopic === 'claim_pd' ||
         (mainTopic === 'niffyinsure' && subTopic === 'claim_paid')
@@ -488,6 +501,7 @@ export class IndexerService {
     topics: StellarNativeValue[],
     data: EventPayload,
     event: SorobanEvent,
+    network: string,
   ) {
     const claimId = Number(topics[1]);
     const voter = topics[2]?.toString();
@@ -498,8 +512,12 @@ export class IndexerService {
       return;
     }
 
+    const existingVote = await tx.vote.findUnique({
+      where: { claimId_voterAddress: { claimId, voterAddress: voter } },
+      select: { claimId: true },
+    });
+
     // Idempotent upsert — unique constraint on (claimId, voterAddress) prevents duplicates.
-    // update:{} means a duplicate event is a no-op; tally is recomputed from COUNT below.
     await tx.vote.upsert({
       where: { claimId_voterAddress: { claimId, voterAddress: voter } },
       create: {
@@ -513,6 +531,10 @@ export class IndexerService {
         vote: option === 'Approve' ? 'APPROVE' : 'REJECT',
       },
     });
+
+    if (existingVote) {
+      this.metrics?.recordDuplicateEvent({ eventType: 'vote', network });
+    }
 
     await tx.claim.update({
       where: { id: claimId },
