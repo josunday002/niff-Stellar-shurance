@@ -38,6 +38,7 @@ model Claim {
   // Relations
   policy            Policy    @relation(fields: [policyId], references: [id])
   votes             Vote[]
+  comments          ClaimComment[]
 
   @@index([status])
   @@index([deletedAt])
@@ -296,6 +297,22 @@ enum TicketStatus {
   IN_PROGRESS
   RESOLVED
   CLOSED
+}
+
+/// Off-chain comment on a claim. Soft-deleted via deletedAt.
+model ClaimComment {
+  id            String    @id @default(cuid())
+  claimId       Int       @map("claim_id")
+  authorAddress String    @map("author_address")
+  body          String
+  createdAt     DateTime  @default(now()) @map("created_at")
+  deletedAt     DateTime? @map("deleted_at")
+
+  claim         Claim     @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@index([claimId, deletedAt, createdAt])
+  @@index([authorAddress, claimId])
+  @@map("claim_comments")
 }
 
 /// Off-chain profile for a wallet holder. Created on first authenticated GET /profile.

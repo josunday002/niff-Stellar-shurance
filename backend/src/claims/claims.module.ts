@@ -6,6 +6,7 @@ import { ClaimViewMapper } from './claim-view.mapper';
 import { ClaimAggregationService } from './services/claim-aggregation.service';
 import { ClaimDeadlineProcessorService } from './claim-deadline.processor.service';
 import { ClaimDeadlineBootstrap } from './claim-deadline.bootstrap';
+import { CommentsModule } from './comments/comments.module';
 import { RpcModule } from '../rpc/rpc.module';
 import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { TenantModule } from '../tenant/tenant.module';
@@ -14,7 +15,7 @@ import { CacheModule } from '../cache/cache.module';
 import { PrismaModule } from '../prisma/prisma.module';
 
 @Module({
-  imports: [PrismaModule, RpcModule, RateLimitModule, TenantModule, IndexerModule, CacheModule],
+  imports: [PrismaModule, RpcModule, RateLimitModule, TenantModule, IndexerModule, CacheModule, CommentsModule],
   controllers: [ClaimsController],
   providers: [
     ClaimsService,
