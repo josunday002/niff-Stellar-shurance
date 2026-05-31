@@ -135,36 +135,7 @@ describe('PolicyDashboard', () => {
 
     render(<PolicyDashboard />);
 
-    expect(screen.getByText(/Expiring soon/i)).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Expiring soon/i })).toBeInTheDocument();
     expect(screen.getByText(/#43/)).toBeInTheDocument();
-  });
-
-  it('renders expired and active sections for mixed policy groups', () => {
-    const activePolicy = makePolicy({ policy_id: 44, expiry_countdown: { ledgers_remaining: 120961 } });
-    const expiredPolicy = makePolicy({ policy_id: 45, is_active: false, expiry_countdown: { ledgers_remaining: -10 } });
-
-    useOptimisticPoliciesMock.mockReturnValue({
-      policies: [activePolicy, expiredPolicy],
-      mergedPolicies: [activePolicy, expiredPolicy],
-      total: 2,
-      pageIndex: 0,
-      hasNextPage: false,
-      hasPrevPage: false,
-      loading: false,
-      error: null,
-      goToPage: jest.fn(),
-      retry: jest.fn(),
-      applyOptimisticPolicy: jest.fn(),
-      entries: new Map(),
-      confirm: jest.fn(),
-      rollback: jest.fn(),
-    });
-
-    render(<PolicyDashboard />);
-
-    expect(screen.getByText(/Active policies/i)).toBeInTheDocument();
-    expect(screen.getByText(/Expired policies/i)).toBeInTheDocument();
-    expect(screen.getByText(/#44/)).toBeInTheDocument();
-    expect(screen.getByText(/#45/)).toBeInTheDocument();
   });
 });

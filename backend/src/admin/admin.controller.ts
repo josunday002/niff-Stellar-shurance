@@ -14,26 +14,31 @@ import {
   HttpCode,
   HttpStatus,
   NotFoundException,
+  ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { Request, Response } from 'express';
-import { Prisma } from '@prisma/client';
+import { ClaimStatus, Prisma } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminRoleGuard } from './guards/admin-role.guard';
 import { AdminService } from './admin.service';
 import { AdminPoliciesService } from './admin-policies.service';
 import { AuditService } from './audit.service';
+import { AdminStatsService } from './admin-stats.service';
 import { ReindexDto } from './dto/reindex.dto';
 import { BackfillDto } from './dto/backfill.dto';
 import { AuditQueryDto } from './dto/audit-query.dto';
 import { FeatureFlagDto } from './dto/feature-flag.dto';
 import { SetRateLimitDto, EnableOverrideDto } from './dto/rate-limit.dto';
+import { BulkUpdateClaimsDto, BULK_UPDATE_MAX_BATCH } from './dto/bulk-update-claims.dto';
 import { PrivacyService, PrivacyRequestType } from '../maintenance/privacy.service';
 import { RateLimitService } from '../rate-limit/rate-limit.service';
 import { QueueMonitorService } from '../queues/queue-monitor.service';
 import { SolvencyMonitoringService } from '../maintenance/solvency-monitoring.service';
+import { AdminTenantsService, CreateTenantDto, UpdateTenantDto } from './admin-tenants.service';
 
 class PrivacyRequestDto {
   @IsString() subjectWalletAddress!: string;
@@ -41,9 +46,22 @@ class PrivacyRequestDto {
   @IsOptional() @IsString() notes?: string;
 }
 
+class ClaimStatusOverrideDto {
+  @IsEnum(ClaimStatus) newStatus!: ClaimStatus;
+  @IsString() @IsNotEmpty() reason!: string;
+}
+
 type AdminRequest = Request & {
   user?: {
     walletAddress?: string;
+    scope?: string;
+    scopes?: string[];
+  };
+  adminIdentity?: {
+    staffId?: string;
+    email?: string;
+    role?: string;
+    scopes?: string[];
   };
 };
 
@@ -52,6 +70,8 @@ type AdminRequest = Request & {
 @UseGuards(JwtAuthGuard, AdminRoleGuard)
 @Controller('admin')
 export class AdminController {
+  private readonly logger = new Logger(AdminController.name);
+
   constructor(
     private readonly adminService: AdminService,
     private readonly adminPoliciesService: AdminPoliciesService,
@@ -61,7 +81,22 @@ export class AdminController {
     private readonly queueMonitor: QueueMonitorService,
     private readonly configService: ConfigService,
     private readonly solvencyMonitoringService: SolvencyMonitoringService,
+    private readonly tenantsService: AdminTenantsService,
   ) {}
+
+  /**
+   * GET /admin/stats
+   *
+   * Aggregated platform metrics: policy counts, claim counts by status,
+   * treasury balance (from Redis solvency snapshot), and indexer lag.
+   * Response is cached in Redis with a short TTL (default: 30s).
+   */
+  @Get('stats')
+  @ApiOperation({ summary: 'Aggregated platform metrics (cached)' })
+  async getStats(@Req() req: AdminRequest) {
+    const tenantId = (req as unknown as { tenantId?: string }).tenantId;
+    return this.adminStatsService.getStats(tenantId);
+  }
 
   /**
    * POST /admin/reindex
@@ -87,6 +122,22 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return { jobId, fromLedger: dto.fromLedger, network, status: 'queued' };
+  }
+
+  /**
+   * GET /admin/reindex/status
+   *
+   * Returns the latest reindex progress for a network, including percentage complete.
+   */
+  @Get('reindex/status')
+  @ApiOperation({ summary: 'Get latest reindex progress for a network' })
+  async getReindexStatus(@Query('network') networkParam?: string) {
+    const network = networkParam ?? this.configService.get<string>('STELLAR_NETWORK', 'testnet');
+    const status = await this.adminService.getReindexStatus(network);
+    if (!status) {
+      throw new NotFoundException(`No reindex progress found for network ${network}`);
+    }
+    return status;
   }
 
   /**
@@ -243,6 +294,65 @@ export class AdminController {
   }
 
   /**
+   * POST /admin/claims/:id/override
+   *
+   * Force a non-terminal claim to a new off-chain status. Requires elevated
+   * admin scope and writes the immutable audit row before mutating the claim.
+   */
+  @Post('claims/:id/override')
+  @ApiOperation({ summary: 'Force a claim status transition with elevated admin scope' })
+  async overrideClaimStatus(
+    @Param('id') idParam: string,
+    @Body() dto: ClaimStatusOverrideDto,
+    @Req() req: AdminRequest,
+  ) {
+    this.requireElevatedScope(req);
+    const claimId = Number(idParam);
+    if (!Number.isInteger(claimId) || claimId < 0) {
+      throw new BadRequestException('id must be a non-negative integer');
+    }
+    const reason = dto.reason.trim();
+    if (!reason) {
+      throw new BadRequestException('reason must be non-empty');
+    }
+
+    const actor =
+      req.adminIdentity?.email ??
+      req.adminIdentity?.staffId ??
+      req.user?.walletAddress ??
+      'unknown';
+    const before = await this.adminService.getClaimForOverride(claimId);
+    await this.auditService.write({
+      actor,
+      action: 'claim_status_override',
+      payload: {
+        claimId,
+        oldStatus: before.status,
+        newStatus: dto.newStatus,
+        reason,
+        requestBody: dto,
+      },
+      ipAddress: req.ip,
+    });
+
+    const updated = await this.adminService.overrideClaimStatus(claimId, dto.newStatus);
+    this.sorobanService
+      .tryEmitClaimStatusOverrideEvent({
+        claimId,
+        oldStatus: before.status,
+        newStatus: dto.newStatus,
+        reason,
+        actor,
+      })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Soroban claim override event emission failed for ${claimId}: ${msg}`);
+      });
+
+    return { claimId, oldStatus: before.status, newStatus: updated.status, status: 'updated' };
+  }
+
+  /**
    * GET /admin/feature-flags
    *
    * Lists all feature flags and their current state.
@@ -251,6 +361,27 @@ export class AdminController {
   @ApiOperation({ summary: 'List all feature flags' })
   async listFeatureFlags() {
     return this.adminService.getFeatureFlags();
+  }
+
+  /**
+   * POST /admin/feature-flags
+   *
+   * Creates a new feature flag. Key must be in the predefined allowlist.
+   * Writes an immutable audit row.
+   */
+  @Post('feature-flags')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Create a new feature flag (allowlisted keys only)' })
+  async createFeatureFlag(@Body() dto: FeatureFlagDto & { key: string }, @Req() req: AdminRequest) {
+    const actor = req.user?.walletAddress ?? 'unknown';
+    const flag = await this.adminService.createFeatureFlag(dto.key, dto.enabled, dto.description, actor);
+    await this.auditService.write({
+      actor,
+      action: 'feature_flag_create',
+      payload: { key: dto.key, enabled: dto.enabled, description: dto.description },
+      ipAddress: req.ip,
+    });
+    return flag;
   }
 
   /**
@@ -418,5 +549,79 @@ export class AdminController {
       ipAddress: req.ip,
     });
     return { queue, jobId, status: 'retried' };
+  }
+
+  /**
+   * GET /admin/claims/search
+   *
+   * Search claims with full-text search and filtering.
+   * Supports: q (text search), status, claimant, policyId, dateFrom, dateTo
+   * Returns cursor-paginated results with total count.
+   */
+  @Get('claims/search')
+  @ApiOperation({ summary: 'Search claims with filters and full-text search' })
+  async searchClaims(
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('claimant') claimant?: string,
+    @Query('policyId') policyId?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('after') after?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminService.searchClaims({
+      q,
+      status,
+      claimant,
+      policyId,
+      dateFrom,
+      dateTo,
+      after,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
+  }
+
+  /**
+   * GET /admin/policies/export
+   *
+   * Stream policies as CSV with optional filtering.
+   * Supports: status, holderAddress, policyType, dateFrom, dateTo
+   * Returns streaming CSV response.
+   */
+  @Get('policies/export')
+  @ApiOperation({ summary: 'Export policies as CSV with filters' })
+  async exportPolicies(
+    @Req() req: AdminRequest,
+    @Res() res: Response,
+    @Query('status') status?: string,
+    @Query('holderAddress') holderAddress?: string,
+    @Query('policyType') policyType?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    const actor = req.user?.walletAddress ?? 'unknown';
+
+    // Write audit log entry
+    await this.auditService.write({
+      actor,
+      action: 'policies_exported',
+      payload: { status, holderAddress, policyType, dateFrom, dateTo },
+      ipAddress: req.ip,
+    });
+
+    // Generate CSV
+    const csv = await this.adminService.exportPoliciesCSV({
+      status,
+      holderAddress,
+      policyType,
+      dateFrom,
+      dateTo,
+    });
+
+    // Stream response
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="policies.csv"');
+    res.send(csv);
   }
 }

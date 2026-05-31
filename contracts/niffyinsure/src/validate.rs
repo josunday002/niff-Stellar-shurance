@@ -53,6 +53,10 @@ pub enum Error {
     VotingWindowStillOpen = 40,
     NotEligibleVoter = 41,
     RateLimitExceeded = 42,
+    /// Evidence URL does not match IPFS or allowlisted gateway format.
+    InvalidEvidenceUrl = 43,
+    /// Contract payout recipients must be allowlisted.
+    PayoutRecipientContractNotAllowlisted = 48,
     /// Admin `set_voting_duration_ledgers` value outside allowed [min, max] range.
     VotingDurationOutOfBounds = 49,
     /// Batch get exceeded POLICY_BATCH_GET_MAX.
@@ -67,6 +71,18 @@ pub enum Error {
     ClaimNotProcessing = 53,
     /// New claim would exceed the rolling per-policy paid-amount cap for the current window.
     RollingClaimCapExceeded = 54,
+    /// Keeper `process_payout_timeout` called before the approved payout deadline elapsed.
+    PayoutDeadlineNotReached = 55,
+    /// Claim amount is below the asset-specific minimum (issue #587).
+    ClaimBelowMinAmount = 56,
+    /// Claim amount exceeds the asset-specific maximum (issue #587).
+    ClaimAboveMaxAmount = 57,
+    /// Delegation not found or expired (issue #585).
+    DelegationInvalid = 58,
+    /// Operator lacks the required permission for this action (issue #585).
+    DelegationPermissionDenied = 59,
+    /// Primary treasury insufficient and no reinsurance configured (issue #581).
+    NoReinsuranceConfigured = 60,
 }
 
 pub fn validate_quorum_bps(bps: u32) -> Result<(), Error> {
@@ -74,6 +90,22 @@ pub fn validate_quorum_bps(bps: u32) -> Result<(), Error> {
     if !(QUORUM_BPS_MIN..=QUORUM_BPS_MAX).contains(&bps) {
         // Reuse bounded-config error code (Soroban `contracterror` caps variant count).
         return Err(Error::VotingDurationOutOfBounds);
+    }
+    Ok(())
+}
+
+pub fn validate_protocol_fee_bps(bps: u32) -> Result<(), Error> {
+    use crate::types::PROTOCOL_FEE_BPS_MAX;
+    if bps > PROTOCOL_FEE_BPS_MAX {
+        return Err(Error::ProtocolFeeOutOfBounds);
+    }
+    Ok(())
+}
+
+pub fn validate_min_solvency_ratio_bps(bps: u32) -> Result<(), Error> {
+    use crate::types::{MIN_SOLVENCY_RATIO_BPS_MAX, MIN_SOLVENCY_RATIO_BPS_MIN};
+    if !(MIN_SOLVENCY_RATIO_BPS_MIN..=MIN_SOLVENCY_RATIO_BPS_MAX).contains(&bps) {
+        return Err(Error::SolvencyRatioOutOfBounds);
     }
     Ok(())
 }
@@ -136,6 +168,10 @@ pub fn check_claim_fields(
     if evidence.len() > max_evidence {
         return Err(Error::TooManyImageUrls);
     }
+    let min_evidence = crate::storage::get_min_evidence_count(env);
+    if evidence.len() < min_evidence {
+        return Err(Error::InsufficientEvidence);
+    }
     for entry in evidence.iter() {
         if entry.url.len() > IMAGE_URL_MAX_LEN {
             return Err(Error::ImageUrlTooLong);
@@ -144,6 +180,8 @@ pub fn check_claim_fields(
             // `ExcessiveEvidenceBytes` is the reserved evidence bucket (no dedicated enum slot left).
             return Err(Error::ExcessiveEvidenceBytes);
         }
+        // Validate evidence URL format
+        validate_evidence_url(env, &entry.url)?;
     }
     let _ = env;
     Ok(())
@@ -401,3 +439,114 @@ pub fn check_multiplier_table_shape(table: &MultiplierTable) -> Result<(), Error
     }
     Ok(())
 }
+
+/// Validate evidence URL format: must be `ipfs://` or match an allowlisted gateway prefix.
+pub fn validate_evidence_url(env: &Env, url: &String) -> Result<(), Error> {
+    let url_str = url.to_xdr(env);
+    
+    // Check for ipfs:// prefix
+    if url_str.len() >= 7 {
+        let prefix = &url_str[..7];
+        if prefix == b"ipfs://" {
+            return Ok(());
+        }
+    }
+    
+    // Check against allowlisted gateway prefixes
+    let gateways = crate::storage::get_gateway_allowlist(env);
+    for gateway in gateways.iter() {
+        let gateway_str = gateway.to_xdr(env);
+        if url_str.len() >= gateway_str.len() {
+            let url_prefix = &url_str[..gateway_str.len()];
+            if url_prefix == gateway_str.as_slice() {
+                return Ok(());
+            }
+        }
+    }
+    
+    Err(Error::InvalidEvidenceUrl)
+}
+
+#[cfg(test)]
+mod evidence_url_validation_tests {
+    use super::*;
+    use soroban_sdk::{Env, String};
+
+    #[test]
+    fn ipfs_prefix_is_valid() {
+        let env = Env::default();
+        let contract_id = env.register(crate::NiffyInsure, ());
+        let url = String::from_str(&env, "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        env.as_contract(&contract_id, || {
+            assert!(validate_evidence_url(&env, &url).is_ok());
+        });
+    }
+
+    #[test]
+    fn empty_string_is_invalid() {
+        let env = Env::default();
+        let contract_id = env.register(crate::NiffyInsure, ());
+        let url = String::from_str(&env, "");
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                validate_evidence_url(&env, &url).unwrap_err(),
+                Error::InvalidEvidenceUrl
+            );
+        });
+    }
+
+    #[test]
+    fn invalid_url_is_rejected() {
+        let env = Env::default();
+        let contract_id = env.register(crate::NiffyInsure, ());
+        let url = String::from_str(&env, "https://example.com/file");
+        env.as_contract(&contract_id, || {
+            assert_eq!(
+                validate_evidence_url(&env, &url).unwrap_err(),
+                Error::InvalidEvidenceUrl
+            );
+        });
+    }
+
+    #[test]
+    fn allowlisted_gateway_is_valid() {
+        let env = Env::default();
+        let contract_id = env.register(crate::NiffyInsure, ());
+        env.as_contract(&contract_id, || {
+            // Set up gateway allowlist
+            let mut gateways = soroban_sdk::Vec::new(&env);
+            gateways.push_back(String::from_str(&env, "https://gateway.pinata.cloud/ipfs/"));
+            crate::storage::set_gateway_allowlist(&env, &gateways);
+
+            let url = String::from_str(&env, "https://gateway.pinata.cloud/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+            assert!(validate_evidence_url(&env, &url).is_ok());
+        });
+    }
+
+    #[test]
+    fn non_allowlisted_gateway_is_invalid() {
+        let env = Env::default();
+        let contract_id = env.register(crate::NiffyInsure, ());
+        env.as_contract(&contract_id, || {
+            // Set up gateway allowlist with one gateway
+            let mut gateways = soroban_sdk::Vec::new(&env);
+            gateways.push_back(String::from_str(&env, "https://gateway.pinata.cloud/ipfs/"));
+            crate::storage::set_gateway_allowlist(&env, &gateways);
+
+            // Try a different gateway
+            let url = String::from_str(&env, "https://other-gateway.com/ipfs/bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+            assert_eq!(
+                validate_evidence_url(&env, &url).unwrap_err(),
+                Error::InvalidEvidenceUrl
+            );
+        });
+    }
+}
+    /// Claim evidence update must happen before any votes are cast.
+    ClaimEvidenceUpdateNotAllowed = 44,
+    /// Evidence count must fit the configured min/max bounds.
+    EvidenceCountOutOfBounds = 45,
+    /// Treasury deposits must be strictly positive.
+    ZeroTreasuryDeposit = 46,
+    /// Caller is not on the authorized treasury depositor allowlist.
+    UnauthorizedTreasuryDepositor = 47,

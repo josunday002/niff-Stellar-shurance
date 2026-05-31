@@ -71,6 +71,13 @@ pub const QUORUM_BPS_MAX: u32 = 10_000;
 /// One full turn-out / 100% weight in bps (used in the quorum formula below).
 pub const QUORUM_BPS_DENOMINATOR: u32 = 10_000;
 
+/// Absolute maximum protocol fee in basis points.
+pub const PROTOCOL_FEE_BPS_MAX: u32 = 1_000;
+
+/// Solvency threshold bounds in basis points. `100_000` = 1,000%.
+pub const MIN_SOLVENCY_RATIO_BPS_MIN: u32 = 0;
+pub const MIN_SOLVENCY_RATIO_BPS_MAX: u32 = 100_000;
+
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -79,6 +86,21 @@ pub enum PolicyType {
     Auto,
     Health,
     Property,
+}
+
+/// Per-policy-type admin configuration stored in the registry.
+///
+/// `payout_asset_override`: when `Some(asset)`, approved claims for this policy type
+/// are paid out in `asset` instead of the policy's premium asset. The override asset
+/// must be allowlisted at the time it is configured (validated in the admin setter).
+///
+/// When `None`, payout falls back to the policy's bound premium asset (existing behaviour).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PolicyTypeConfig {
+    /// Optional SEP-41 asset contract to use for claim payouts.
+    /// Must be allowlisted when set. `None` = use premium asset (default).
+    pub payout_asset_override: Option<Address>,
 }
 
 #[contracttype]
@@ -114,6 +136,7 @@ pub type CoverageType = CoverageTier;
 ///   Processing  → Rejected      (participation quorum met + reject wins or tie; or deadline with no quorum)
 ///   Processing  → Withdrawn     (claimant calls `withdraw_claim` before any vote is cast)
 ///   Approved    → Paid          (admin calls process_claim)
+///   Approved    → PayoutTimeout (keeper calls `process_payout_timeout` after `payout_deadline_ledger`)
 ///
 /// Appeal-flow transitions (requires Rejected status + open appeal window):
 ///   Rejected    → UnderAppeal   (claimant calls open_appeal within window)
@@ -129,6 +152,7 @@ pub enum ClaimStatus {
     Processing,
     Pending,
     Approved,
+    PayoutTimeout,
     Paid,
     Rejected,
     /// Claimant has opened an appeal; fresh vote round in progress.
@@ -139,6 +163,8 @@ pub enum ClaimStatus {
     AppealRejected,
     /// Claimant withdrew before voting began; record kept for audit; no payout.
     Withdrawn,
+    /// Admin disputed the claim after approval; payout is frozen pending review.
+    Disputed,
     /// RESERVED — appeal in progress; not yet implemented.
     ///
     /// This variant is declared to **reserve the discriminant** in the on-chain
@@ -181,11 +207,13 @@ impl ClaimStatus {
         matches!(
             self,
             ClaimStatus::Approved
+                | ClaimStatus::PayoutTimeout
                 | ClaimStatus::Paid
                 | ClaimStatus::Rejected
                 | ClaimStatus::AppealApproved
                 | ClaimStatus::AppealRejected
-                | ClaimStatus::Withdrawn // NOTE: ClaimStatus::Appealed is intentionally absent — an appeal
+                | ClaimStatus::Withdrawn
+                | ClaimStatus::Disputed // NOTE: ClaimStatus::Appealed is intentionally absent — an appeal
                                          // in progress is NOT terminal.  Adding it here would allow
                                          // process_claim / finalize_claim to close an appealed claim without
                                          // resolving the appeal round, which would be incorrect.
@@ -222,6 +250,14 @@ pub enum VoteOption {
     Reject,
 }
 
+/// Active vote delegation binding for a holder.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VoteDelegation {
+    pub delegate: Address,
+    pub expiry_ledger: u32,
+}
+
 /// Reason for policy termination.
 ///
 /// GOVERNANCE NOTE: `ExcessiveRejections` is set by the claims engine
@@ -254,6 +290,33 @@ pub enum TerminationReason {
     ExcessiveRejections,
 }
 
+/// Reason for pausing the protocol.
+///
+/// Stored alongside the pause state so incident responders can understand
+/// the halt from on-chain data alone without relying on off-chain communication.
+///
+/// # Variants
+/// - `SecurityIncident`: Active exploit or vulnerability being mitigated.
+/// - `UpgradePending`: Planned upgrade requiring a maintenance window.
+/// - `SolvencyRisk`: Treasury or reserve concerns requiring investigation.
+/// - `Regulatory`: Regulatory directive or compliance hold.
+///
+/// # TTL constants rationale
+/// Pause state is stored in instance storage (always live while the contract
+/// is deployed). No separate TTL management is needed for pause state itself.
+///
+/// # Unpause behaviour
+/// When `unpause` is called, the stored `PauseReason` is cleared (set to `None`).
+/// Callers can verify the reason is cleared via `get_pause_reason()`.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum PauseReason {
+    SecurityIncident,
+    UpgradePending,
+    SolvencyRisk,
+    Regulatory,
+}
+
 // ── Pagination ────────────────────────────────────────────────────────────────
 
 /// Hard cap on items returned per paginated call.
@@ -280,6 +343,12 @@ pub const PAGE_SIZE_MAX: u32 = 20;
 /// simulation and unfair resource use. Unlike `list_policies` (which silently clamps
 /// `limit`), an over-cap batch **reverts** so callers chunk explicitly.
 pub const POLICY_BATCH_GET_MAX: u32 = PAGE_SIZE_MAX;
+
+/// Maximum claim IDs in a single `get_claims_batch` call.
+///
+/// This intentionally matches [`PAGE_SIZE_MAX`] so dashboard simulations can
+/// bulk-load claims without unbounded metered storage reads.
+pub const CLAIM_BATCH_GET_MAX: u32 = PAGE_SIZE_MAX;
 
 /// Key for batched policy reads (`get_policies_batch`).
 #[contracttype]
@@ -361,6 +430,8 @@ pub struct InitiatePolicyOptions {
     /// Opt-in replay-protection nonce. Pass `None` to skip the check.
     /// Supplementary to Stellar sequence numbers — not a replacement.
     pub expected_nonce: Option<u64>,
+    /// Off-chain URI to the policy governing document. Must be non-empty.
+    pub metadata_uri: String,
 }
 
 #[contracttype]
@@ -371,6 +442,87 @@ pub struct MultiplierTable {
     pub coverage: Map<CoverageTier, i128>,
     pub safety_discount: i128,
     pub version: u32,
+}
+
+// ── Event subscription filter system ─────────────────────────────────────────
+
+/// Maximum active subscriptions per address.
+pub const MAX_SUBSCRIPTIONS_PER_ADDRESS: u32 = 10;
+
+/// Event type filter for subscriptions.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum EventType {
+    PolicyInitiated,
+    ClaimFiled,
+    ClaimFinalized,
+    ClaimPaid,
+    VoteCast,
+}
+
+/// An on-chain subscription filter for off-chain indexers.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Subscription {
+    pub id: u64,
+    pub owner: Address,
+    /// Event types this subscription matches.
+    pub event_types: Vec<EventType>,
+    /// Pet/policy IDs this subscription matches (empty = all).
+    pub pet_ids: Vec<u64>,
+    /// Ledger at which this subscription expires.
+    pub expires_at: u32,
+}
+
+// ── Vet specialization ────────────────────────────────────────────────────────
+
+/// Vet medical specializations. Certain record types require a matching specialization.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Specialization {
+    GeneralPractice,
+    Surgery,
+    Dermatology,
+    Oncology,
+    Dentistry,
+}
+
+/// Medical record types that may require a specific vet specialization.
+#[contracttype]
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum MedicalRecordType {
+    GeneralConsult,
+    SurgeryNotes,
+    DermatologyReport,
+    OncologyReport,
+    DentalProcedure,
+}
+
+impl MedicalRecordType {
+    /// Returns the required specialization for this record type, if any.
+    pub fn required_specialization(&self) -> Option<Specialization> {
+        match self {
+            MedicalRecordType::GeneralConsult => None,
+            MedicalRecordType::SurgeryNotes => Some(Specialization::Surgery),
+            MedicalRecordType::DermatologyReport => Some(Specialization::Dermatology),
+            MedicalRecordType::OncologyReport => Some(Specialization::Oncology),
+            MedicalRecordType::DentalProcedure => Some(Specialization::Dentistry),
+        }
+    }
+}
+
+// ── Region registry ───────────────────────────────────────────────────────────
+
+/// Configuration for a region code in the admin-managed registry.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionConfig {
+    /// Optional parent region code (empty string = no parent).
+    pub parent: String,
+    /// Risk multiplier in basis points (10_000 = 1×). Applied on top of the tier multiplier.
+    pub risk_multiplier: i128,
+    /// Whether this region accepts new policies.
+    pub active: bool,
 }
 
 /// Identifies a single row in the multiplier table for granular admin updates.
@@ -480,6 +632,9 @@ pub struct Policy {
     /// readable via `get_policy`. It carries only a count — no allegation
     /// narratives, no claimant-identifying data.
     pub strike_count: u32,
+    /// Off-chain URI to the policy governing document.
+    /// Must be non-empty at policy creation. Admin can update via `update_policy_metadata_uri`.
+    pub metadata_uri: String,
 }
 
 /// Return value of [`crate::policy::renew_policy`].
@@ -517,10 +672,16 @@ pub struct Claim {
     pub evidence: Vec<ClaimEvidenceEntry>,
     pub status: ClaimStatus,
     pub voting_deadline_ledger: u32,
+    /// Ledger by which an approved payout must be executed or the claim auto-times out.
+    pub payout_deadline_ledger: u32,
     pub approve_votes: u32,
     pub reject_votes: u32,
     /// Ledger sequence at which this claim was filed (voting window anchor).
     pub filed_at: u32,
+    /// Number of eligible voters in the snapshot taken at filing time.
+    /// Used for quorum calculation so the result is stable even if the
+    /// snapshot TTL expires before finalization.
+    pub eligible_voter_count: u32,
     // ── Appeal fields ────────────────────────────────────────────────────────
     /// Ledger by which `open_appeal` must be called (0 if never rejected).
     /// Set to `rejected_at + APPEAL_OPEN_WINDOW_LEDGERS` when status → Rejected.
@@ -537,6 +698,10 @@ pub struct Claim {
     /// [`CLAIM_STATUS_HISTORY_MAX`]; on overflow the oldest entries are removed.
     /// May be incomplete if the cap is exceeded; `status` is authoritative.
     pub status_history: Vec<ClaimStatusHistoryEntry>,
+    /// Ledger by which admin must dispute the claim (set after finalization).
+    /// After this ledger passes, payout executes automatically for approved claims.
+    /// Set to 0 if no dispute window is active.
+    pub dispute_deadline_ledger: u32,
 }
 
 /// Per-policy rolling window accumulator for **paid** claim amounts (same ledger window for all policies).
@@ -745,3 +910,58 @@ pub struct ParametricClaim {
     pub resolved_ledger: u32,
 }
 // Implementation complete
+
+// ── Issue #587: Asset-specific claim amount bounds ────────────────────────────
+
+/// Per-asset minimum and maximum claim amount configuration.
+/// Prevents dust claims (below min) and over-coverage claims (above max).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AllowedAssetConfig {
+    /// Minimum claim amount in asset units. Claims below this revert.
+    pub min_claim_amount: i128,
+    /// Maximum claim amount in asset units. Claims above this revert.
+    pub max_claim_amount: i128,
+}
+
+// ── Issue #585: Admin role delegation ────────────────────────────────────────
+
+/// Permission flags for a delegated operator.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegationPermissions {
+    /// Operator may call set_claim_fraud_score.
+    pub can_set_fraud_score: bool,
+    /// Operator may call set_allowed_asset_config.
+    pub can_set_asset_config: bool,
+    /// Operator may call set_reinsurance_contract.
+    pub can_set_reinsurance: bool,
+}
+
+/// On-chain delegation record stored per operator address.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DelegationRecord {
+    /// The admin who granted this delegation.
+    pub grantor: Address,
+    /// Ledger sequence after which this delegation is no longer valid.
+    pub expiry_ledger: u32,
+    /// Permissions granted to the operator.
+    pub permissions: DelegationPermissions,
+}
+
+// ── Issue #581: Reinsurance pool events ──────────────────────────────────────
+
+/// Emitted when reinsurance funds are drawn to cover a claim shortfall.
+#[contractevent(topics = ["niffyinsure", "reinsurance_drawdown"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReinsuranceDrawdown {
+    #[topic]
+    pub claim_id: u64,
+    /// Amount paid from the primary treasury.
+    pub primary_amount: i128,
+    /// Amount drawn from the reinsurance pool.
+    pub reinsurance_amount: i128,
+    /// Reinsurance contract address used.
+    pub reinsurance_contract: Address,
+}

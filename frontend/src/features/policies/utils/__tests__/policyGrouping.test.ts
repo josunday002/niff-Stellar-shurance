@@ -1,5 +1,10 @@
+/**
+ * @jest-environment jsdom
+ */
+import { classifyPolicyExpiryGroup, groupPoliciesByExpiry, EXPIRING_SOON_LEDGER_THRESHOLD } from '../policyGrouping';
 import type { PolicyDto } from '@/features/policies/api';
-import { classifyPolicyExpiryGroup, groupPoliciesByExpiry, EXPIRING_SOON_LEDGER_THRESHOLD } from '@/features/policies/utils/policyGrouping';
+
+type PartialPolicy = Partial<PolicyDto>;
 
 const basePolicy: PolicyDto = {
   holder: 'GTEST1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDE',
@@ -15,7 +20,7 @@ const basePolicy: PolicyDto = {
   },
   expiry_countdown: {
     start_ledger: 1000000,
-    end_ledger: 1120960,
+    end_ledger: 1012096,
     ledgers_remaining: 120960,
     avg_ledger_close_seconds: 5,
   },
@@ -33,39 +38,40 @@ function makePolicy(overrides: Partial<PolicyDto> = {}): PolicyDto {
   };
 }
 
-describe('policyGrouping', () => {
-  it('classifies active policies when expiry is more than 7 days away', () => {
+describe('policy grouping utilities', () => {
+  it('classifies active policies when more than 7 days remain', () => {
     const policy = makePolicy({ expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD + 1 } });
 
     expect(classifyPolicyExpiryGroup(policy)).toBe('active');
   });
 
-  it('classifies expiring soon policies when expiry is exactly 7 days away', () => {
+  it('classifies policies as expiring soon when within 7 days', () => {
     const policy = makePolicy({ expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD } });
 
     expect(classifyPolicyExpiryGroup(policy)).toBe('expiringSoon');
   });
 
-  it('classifies expired policies when policy is inactive', () => {
-    const policy = makePolicy({ is_active: false, expiry_countdown: { ledgers_remaining: -1 } });
+  it('classifies active policies with less than 7 days remaining as expiring soon', () => {
+    const policy = makePolicy({ expiry_countdown: { ledgers_remaining: 42_000 } });
+
+    expect(classifyPolicyExpiryGroup(policy)).toBe('expiringSoon');
+  });
+
+  it('classifies inactive policies as expired regardless of remaining ledgers', () => {
+    const policy = makePolicy({ is_active: false, expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD + 1 } });
 
     expect(classifyPolicyExpiryGroup(policy)).toBe('expired');
   });
 
-  it('groups policies into the correct expiry buckets', () => {
-    const policies = [
-      makePolicy({ policy_id: 2, expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD + 1 } }),
-      makePolicy({ policy_id: 3, expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD } }),
-      makePolicy({ policy_id: 4, is_active: false, expiry_countdown: { ledgers_remaining: -100 } }),
-    ];
+  it('groups policies into active, expiring soon, and expired buckets', () => {
+    const policyA = makePolicy({ policy_id: 1, expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD + 1 } });
+    const policyB = makePolicy({ policy_id: 2, expiry_countdown: { ledgers_remaining: EXPIRING_SOON_LEDGER_THRESHOLD } });
+    const policyC = makePolicy({ policy_id: 3, is_active: false });
 
-    const groups = groupPoliciesByExpiry(policies);
+    const grouped = groupPoliciesByExpiry([policyA, policyB, policyC]);
 
-    expect(groups.active).toHaveLength(1);
-    expect(groups.expiringSoon).toHaveLength(1);
-    expect(groups.expired).toHaveLength(1);
-    expect(groups.active[0].policy_id).toBe(2);
-    expect(groups.expiringSoon[0].policy_id).toBe(3);
-    expect(groups.expired[0].policy_id).toBe(4);
+    expect(grouped.active).toEqual([policyA]);
+    expect(grouped.expiringSoon).toEqual([policyB]);
+    expect(grouped.expired).toEqual([policyC]);
   });
 });

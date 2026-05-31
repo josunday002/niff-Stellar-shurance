@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, Post, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { SorobanService } from '../rpc/soroban.service';
 import { GetPoliciesBatchDto } from './dto/get-policies-batch.dto';
+import { GetClaimsBatchDto } from './dto/get-claims-batch.dto';
 
 @ApiTags('chain')
 @Controller('chain')
@@ -20,6 +21,23 @@ export class ChainController {
   ): Promise<{ results: (Record<string, unknown> | null)[] }> {
     const results = await this.soroban.simulateGetPoliciesBatch({
       keys: dto.keys.map((k) => ({ holder: k.holder, policy_id: k.policy_id })),
+      sourceAccount: dto.source_account,
+    });
+    return { results };
+  }
+
+  @Post('claims/batch')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Batch-read claims via Soroban simulation',
+    description:
+      'Invokes get_claims_batch in a single simulated transaction. Missing claims appear as null in the same positions as the request IDs. Over 20 IDs returns 400.',
+  })
+  async getClaimsBatch(
+    @Body() dto: GetClaimsBatchDto,
+  ): Promise<{ results: (Record<string, unknown> | null)[] }> {
+    const results = await this.soroban.simulateGetClaimsBatch({
+      ids: dto.ids,
       sourceAccount: dto.source_account,
     });
     return { results };

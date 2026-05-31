@@ -11,11 +11,14 @@ import {
   BadRequestException,
   ServiceUnavailableException,
   Optional,
+  OnModuleInit,
+  OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import CircuitBreaker from 'opossum';
 import { MetricsService } from '../metrics/metrics.service';
 import { getNetworkConfig } from '../config/network.config';
-import { POLICY_BATCH_GET_MAX } from '../chain/chain.constants';
+import { CLAIM_BATCH_GET_MAX, POLICY_BATCH_GET_MAX } from '../chain/chain.constants';
 import {
   Account,
   BASE_FEE,
@@ -78,14 +81,68 @@ export interface FinalizeClaimResult {
   onChainStatus: string;
 }
 
+interface PendingSubmission {
+  transactionXdr: string;
+  timestamp: number;
+}
+
 @Injectable()
-export class SorobanService {
+export class SorobanService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SorobanService.name);
+  private circuitBreaker!: CircuitBreaker;
+  private pendingSubmissions: PendingSubmission[] = [];
+  private readonly cbThreshold: number;
+  private readonly cbResetMs: number;
+  private quoteCache = new Map<string, { result: unknown; timestamp: number }>();
+  private readonly quoteCacheTtlMs = 60_000;
 
   constructor(
     private readonly configService: ConfigService,
     @Optional() private readonly metricsService?: MetricsService,
-  ) {}
+  ) {
+    this.cbThreshold = this.configService.get<number>('SOROBAN_RPC_CIRCUIT_BREAKER_THRESHOLD', 5);
+    this.cbResetMs = this.configService.get<number>('SOROBAN_RPC_CIRCUIT_BREAKER_RESET_MS', 60_000);
+  }
+
+  onModuleInit(): void {
+    this.initCircuitBreaker();
+  }
+
+  onModuleDestroy(): void {
+    this.circuitBreaker?.shutdown();
+  }
+
+  private initCircuitBreaker(): void {
+    this.circuitBreaker = new CircuitBreaker(
+      async (fn: () => Promise<any>) => fn(),
+      {
+        timeout: 30_000,
+        maxFailures: this.cbThreshold,
+        resetTimeout: this.cbResetMs,
+        name: 'SorobanRpcCircuitBreaker',
+      } as any,
+    );
+
+    this.circuitBreaker.on('open', () => {
+      this.logger.warn('Soroban RPC circuit breaker opened');
+    });
+
+    this.circuitBreaker.on('halfOpen', () => {
+      this.logger.debug('Soroban RPC circuit breaker transitioning to half-open');
+    });
+
+    this.circuitBreaker.on('close', () => {
+      this.logger.debug('Soroban RPC circuit breaker closed');
+    });
+  }
+
+  isRpcHealthy(): boolean {
+    return !this.circuitBreaker?.opened;
+  }
+
+  getPendingSubmissions(): PendingSubmission[] {
+    return [...this.pendingSubmissions];
+  }
 
   /**
    * Wraps an RPC call with timing + metric recording.
@@ -212,6 +269,16 @@ export class SorobanService {
     );
   }
 
+  private isClaimBatchTooLargeSimulation(error: string): boolean {
+    const e = error.toLowerCase();
+    return (
+      e.includes('claimbatch') ||
+      e.includes('claim_batch') ||
+      // ContractError tag 60 = ClaimBatchTooLarge
+      /\b60\b/.test(error)
+    );
+  }
+
   private mapSimulationError(error: string): never {
     if (
       error.includes('WasmVm') ||
@@ -236,6 +303,7 @@ export class SorobanService {
   /**
    * Simulate generate_premium(policy_type, region, age, risk_score) → i128.
    * Falls back to local computation if contract is not deployed.
+   * Returns cached responses when circuit breaker is open.
    */
   async simulateGeneratePremium(args: {
     policyType: PolicyTypeEnum;
@@ -244,9 +312,30 @@ export class SorobanService {
     riskScore: number;
     sourceAccount: string;
   }): Promise<SimulatePremiumResult> {
-    return this.trackRpc('simulate_generate_premium', () =>
-      this._simulateGeneratePremium(args),
-    );
+    const cacheKey = JSON.stringify(args);
+    const cached = this.quoteCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.quoteCacheTtlMs) {
+      this.logger.debug('Returning cached quote response');
+      return cached.result as SimulatePremiumResult;
+    }
+
+    const simulateFn = async () => {
+      const result = await this._simulateGeneratePremium(args);
+      this.quoteCache.set(cacheKey, { result, timestamp: Date.now() });
+      return result;
+    };
+
+    try {
+      return await this.trackRpc('simulate_generate_premium', async () =>
+        (await this.circuitBreaker.fire(simulateFn)) as SimulatePremiumResult,
+      );
+    } catch (err) {
+      if (this.circuitBreaker.opened && cached) {
+        this.logger.debug('Soroban RPC circuit is open, returning stale cached quote');
+        return cached.result as SimulatePremiumResult;
+      }
+      throw err;
+    }
   }
 
   private async _simulateGeneratePremium(args: {
@@ -533,9 +622,10 @@ export class SorobanService {
   /**
    * Submit a signed transaction to the Soroban RPC.
    * Expects base64-encoded XDR (envelope).
+   * When circuit is open, queue the transaction for retry instead of failing immediately.
    */
   async submitTransaction(transactionXdr: string): Promise<SorobanRpc.Api.SendTransactionResponse> {
-    return this.trackRpc('send_transaction', async () => {
+    const submitFn = async () => {
       const server = this.makeServer();
       const tx = TransactionBuilder.fromXDR(transactionXdr, this.networkPassphrase);
       try {
@@ -555,7 +645,46 @@ export class SorobanService {
           message: 'Failed to submit transaction to the network.',
         });
       }
-    });
+    };
+
+    try {
+      return await this.trackRpc('send_transaction', async () =>
+        (await this.circuitBreaker.fire(submitFn)) as SorobanRpc.Api.SendTransactionResponse,
+      );
+    } catch (err) {
+      if (this.circuitBreaker.opened) {
+        this.logger.debug('Soroban RPC circuit is open, queuing transaction for retry');
+        this.pendingSubmissions.push({
+          transactionXdr,
+          timestamp: Date.now(),
+        });
+        return {
+          status: 'PENDING',
+          hash: '',
+          errorResult: 'Transaction queued for retry when RPC recovers',
+        } as any;
+      }
+      throw err;
+    }
+  }
+
+  async processPendingSubmissions(): Promise<void> {
+    if (this.pendingSubmissions.length === 0 || this.circuitBreaker.opened) {
+      return;
+    }
+
+    const submissions = [...this.pendingSubmissions];
+    this.pendingSubmissions = [];
+
+    for (const submission of submissions) {
+      try {
+        await this.submitTransaction(submission.transactionXdr);
+        this.logger.debug('Processed pending transaction submission');
+      } catch (err) {
+        this.logger.error('Failed to process pending submission, requeuing', err);
+        this.pendingSubmissions.push(submission);
+      }
+    }
   }
 
   /**
@@ -585,6 +714,54 @@ export class SorobanService {
       const server = this.makeServer();
       const info = await server.getLatestLedger();
       return info.sequence;
+    });
+  }
+
+  async tryEmitClaimStatusOverrideEvent(args: {
+    sourceAccount?: string;
+    claimId: number;
+    oldStatus: string;
+    newStatus: string;
+    reason: string;
+    actor: string;
+  }): Promise<void> {
+    await this.trackRpc('emit_claim_override_event', async () => {
+      const sourceAccount =
+        args.sourceAccount ??
+        this.configService.get<string>('SOROBAN_ADMIN_PUBLIC_KEY') ??
+        this.configService.get<string>('ADMIN_PUBLIC_KEY');
+      if (!sourceAccount) {
+        throw new BadRequestException({
+          code: 'ADMIN_SOURCE_ACCOUNT_REQUIRED',
+          message: 'No admin source account configured for Soroban override event emission.',
+        });
+      }
+
+      const server = this.makeServer();
+      const account = await this.loadAccount(server, sourceAccount);
+      const contract = new Contract(this.contractId);
+      const tx = new TransactionBuilder(account, {
+        fee: BASE_FEE,
+        networkPassphrase: this.networkPassphrase,
+      })
+        .addOperation(
+          contract.call(
+            'admin_emit_claim_status_override',
+            nativeToScVal(args.claimId, { type: 'u64' }),
+            nativeToScVal(args.oldStatus, { type: 'string' }),
+            nativeToScVal(args.newStatus, { type: 'string' }),
+            nativeToScVal(args.reason, { type: 'string' }),
+            nativeToScVal(args.actor, { type: 'string' }),
+          ),
+        )
+        .setTimeout(30)
+        .build();
+
+      const simulation = await server.simulateTransaction(tx);
+      if (Api.isSimulationError(simulation)) {
+        const err = simulation as SorobanRpc.Api.SimulateTransactionErrorResponse;
+        throw new BadRequestException({ code: 'OVERRIDE_EVENT_SIMULATION_FAILED', message: err.error });
+      }
     });
   }
 
@@ -664,6 +841,99 @@ export class SorobanService {
       throw new BadRequestException({
         code: 'SIMULATION_DECODE_FAILED',
         message: 'get_policies_batch: unexpected return shape from simulation.',
+      });
+    }
+
+    return native.map((entry: unknown) => {
+      if (entry === null || entry === undefined) {
+        return null;
+      }
+      if (typeof entry === 'object' && entry !== null) {
+        return entry as Record<string, unknown>;
+      }
+      return null;
+    });
+  }
+
+  /**
+   * Simulate `get_claims_batch(Vec<u64>)` -> `Vec<Option<Claim>>`.
+   * One RPC round-trip for claims-board bulk dashboard loads; order matches `ids`.
+   */
+  async simulateGetClaimsBatch(args: {
+    ids: number[];
+    sourceAccount?: string;
+  }): Promise<(Record<string, unknown> | null)[]> {
+    return this.trackRpc('simulate_get_claims_batch', () =>
+      this._simulateGetClaimsBatch(args),
+    );
+  }
+
+  private async _simulateGetClaimsBatch(args: {
+    ids: number[];
+    sourceAccount?: string;
+  }): Promise<(Record<string, unknown> | null)[]> {
+    if (!this.contractId) {
+      throw new BadRequestException({
+        code: 'CONTRACT_NOT_INITIALIZED',
+        message:
+          'CONTRACT_ID is not configured on the server; cannot simulate get_claims_batch.',
+      });
+    }
+    if (args.ids.length > CLAIM_BATCH_GET_MAX) {
+      throw new BadRequestException({
+        code: 'CLAIM_BATCH_TOO_LARGE',
+        message: `At most ${CLAIM_BATCH_GET_MAX} claim IDs per batch (on-chain CLAIM_BATCH_GET_MAX).`,
+      });
+    }
+    if (args.ids.length === 0) {
+      return [];
+    }
+    if (!args.sourceAccount) {
+      throw new BadRequestException({
+        code: 'SOURCE_ACCOUNT_REQUIRED',
+        message: 'source_account is required when simulating a non-empty claim batch.',
+      });
+    }
+
+    const server = this.makeServer();
+    const account = await this.loadAccount(server, args.sourceAccount);
+    const contract = new Contract(this.contractId);
+    const idsScVal = xdr.ScVal.scvVec(
+      args.ids.map((id) => nativeToScVal(id, { type: 'u64' })),
+    );
+
+    const tx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(contract.call('get_claims_batch', idsScVal))
+      .setTimeout(30)
+      .build();
+
+    const simulation = await server.simulateTransaction(tx);
+    if (Api.isSimulationError(simulation)) {
+      const err = simulation as SorobanRpc.Api.SimulateTransactionErrorResponse;
+      if (this.isClaimBatchTooLargeSimulation(err.error)) {
+        throw new BadRequestException({
+          code: 'CLAIM_BATCH_TOO_LARGE',
+          message: `At most ${CLAIM_BATCH_GET_MAX} claim IDs per batch (on-chain CLAIM_BATCH_GET_MAX).`,
+        });
+      }
+      this.mapSimulationError(err.error);
+    }
+
+    const success =
+      simulation as SorobanRpc.Api.SimulateTransactionSuccessResponse;
+    const retval = success.result?.retval;
+    if (!retval) {
+      return [];
+    }
+
+    const native = scValToNative(retval) as unknown;
+    if (!Array.isArray(native)) {
+      throw new BadRequestException({
+        code: 'SIMULATION_DECODE_FAILED',
+        message: 'get_claims_batch: unexpected return shape from simulation.',
       });
     }
 

@@ -10,9 +10,12 @@ import {
   isWarningRow,
 } from '../events/parser-registry';
 import { ClaimEventsService } from '../events/claim-events.service';
+import { ClaimPayoutVerificationService } from '../claims/services/claim-payout-verification.service';
 import { rpc as SorobanRpc, scValToNative } from '@stellar/stellar-sdk';
 import { tryNormalizeAddress } from '../common/utils/normalize-address';
 import { QuoteSimulationCacheService } from '../quote/quote-simulation-cache.service';
+import { ClaimSummaryCacheService } from '../claims/services/claim-summary-cache.service';
+import { VotePubSubService } from '../graphql/vote-pubsub.service';
 
 type IndexerTx = Prisma.TransactionClient;
 type SorobanEvent = SorobanRpc.Api.EventResponse;
@@ -92,9 +95,12 @@ export class IndexerService {
     private readonly prisma: PrismaService,
     private readonly soroban: SorobanService,
     private readonly config: ConfigService,
+    @Optional() private readonly payoutVerification: ClaimPayoutVerificationService,
     @Optional() private readonly metrics?: MetricsService,
     @Optional() private readonly claimEvents?: ClaimEventsService,
     @Optional() private readonly quoteSimulationCache?: QuoteSimulationCacheService,
+    @Optional() private readonly claimSummaryCache?: ClaimSummaryCacheService,
+    @Optional() private readonly votePubSub?: VotePubSubService,
   ) {
     this.networkId = this.config.get<string>('STELLAR_NETWORK', 'testnet');
     this.gapThresholdLedgers = this.config.get<number>('INDEXER_GAP_ALERT_THRESHOLD_LEDGERS', 100);
@@ -111,22 +117,71 @@ export class IndexerService {
   }
 
   /** Bull reindex job: drain backlog for a network after cursor reset. */
-  async processUntilCaughtUp(network?: string): Promise<{ batches: number; events: number }> {
+  async processUntilCaughtUp(
+    network?: string,
+    jobId?: string,
+  ): Promise<{ batches: number; events: number }> {
     const net = network ?? this.networkId;
     let batches = 0;
     let events = 0;
+
+    const latestLedger = await this.soroban.getLatestLedger();
+    const cursorRow = await this.ensureCursor(net);
+    const startLedger = cursorRow.lastProcessedLedger + 1;
+    const totalLedgers = Math.max(0, latestLedger - cursorRow.lastProcessedLedger);
+
+    if (jobId) {
+      await this.prisma.reindexProgress.upsert({
+        where: { jobId },
+        create: {
+          jobId,
+          network: net,
+          startLedger,
+          targetLedger: latestLedger,
+          currentLedger: cursorRow.lastProcessedLedger,
+          totalEvents: totalLedgers,
+          status: 'running',
+        },
+        update: {
+          startLedger,
+          targetLedger: latestLedger,
+          currentLedger: cursorRow.lastProcessedLedger,
+          totalEvents: totalLedgers,
+          status: 'running',
+        },
+      });
+    }
+
     for (;;) {
       const r = await this.processNextBatchForNetwork(net);
       batches += 1;
       events += r.processed;
-      if (r.processed === 0) {
-        break;
+
+      if (jobId) {
+        const cursor = await this.prisma.ledgerCursor.findUnique({ where: { network: net } });
+        await this.prisma.reindexProgress.update({
+          where: { jobId },
+          data: {
+            currentLedger: cursor?.lastProcessedLedger ?? 0,
+            processedEvents: events,
+          },
+        });
       }
+
+      if (r.processed === 0) break;
       if (batches > 10_000) {
         this.logger.warn(`processUntilCaughtUp stopped after ${batches} batches (safety cap)`);
         break;
       }
     }
+
+    if (jobId) {
+      await this.prisma.reindexProgress.update({
+        where: { jobId },
+        data: { status: 'completed' },
+      });
+    }
+
     this.logger.log(`Reindex catch-up finished for ${net}: ${events} events in ${batches} batches`);
     return { batches, events };
   }
@@ -223,6 +278,14 @@ export class IndexerService {
     if (dedup) {
       const elapsed = now.getTime() - dedup.lastFiredAt.getTime();
       if (elapsed < this.gapCooldownMs) {
+        this.logger.log(
+          JSON.stringify({
+            event: 'indexer_ledger_gap_suppressed',
+            network,
+            reason: 'cooldown_active',
+            cooldownRemainingMs: this.gapCooldownMs - elapsed,
+          }),
+        );
         return;
       }
     }
@@ -270,6 +333,13 @@ export class IndexerService {
     const contractId = event.contractId?.toString() ?? '';
 
     await this.prisma.$transaction(async (tx) => {
+      // Detect duplicate before upsert: Prisma upsert doesn't expose whether
+      // it created or updated, so we check existence first.
+      const existing = await tx.rawEvent.findUnique({
+        where: { txHash_eventIndex: { txHash, eventIndex: index } },
+        select: { txHash: true },
+      });
+
       await tx.rawEvent.upsert({
         where: { txHash_eventIndex: { txHash, eventIndex: index } },
         create: {
@@ -286,6 +356,12 @@ export class IndexerService {
         },
         update: {},
       });
+
+      if (existing) {
+        this.metrics?.recordDuplicateEvent({ eventType: 'raw_event', network });
+        await this.advanceCursorInTx(tx, network, event.ledger);
+        return;
+      }
 
       // Use the versioned parser registry for deterministic event routing.
       const parser = selectParser(contractId, event.ledger);
@@ -318,7 +394,7 @@ export class IndexerService {
       ) {
         await this.handleClaimFiled(tx, dataNative, event);
       } else if (mainTopic === 'vote') {
-        await this.handleVoteCast(tx, topics, dataNative as EventPayload, event);
+        await this.handleVoteCast(tx, topics, dataNative as EventPayload, event, network);
       } else if (
         mainTopic === 'claim_pd' ||
         (mainTopic === 'niffyinsure' && subTopic === 'claim_paid')
@@ -424,6 +500,7 @@ export class IndexerService {
       updatedAt: new Date().toISOString(),
       ledger: event.ledger,
     });
+    await this.claimSummaryCache?.invalidateClaim(claimId);
   }
 
   private async handleVoteCast(
@@ -431,6 +508,7 @@ export class IndexerService {
     topics: StellarNativeValue[],
     data: EventPayload,
     event: SorobanEvent,
+    network: string,
   ) {
     const claimId = Number(topics[1]);
     const voter = topics[2]?.toString();
@@ -441,8 +519,12 @@ export class IndexerService {
       return;
     }
 
+    const existingVote = await tx.vote.findUnique({
+      where: { claimId_voterAddress: { claimId, voterAddress: voter } },
+      select: { claimId: true },
+    });
+
     // Idempotent upsert — unique constraint on (claimId, voterAddress) prevents duplicates.
-    // update:{} means a duplicate event is a no-op; tally is recomputed from COUNT below.
     await tx.vote.upsert({
       where: { claimId_voterAddress: { claimId, voterAddress: voter } },
       create: {
@@ -456,6 +538,10 @@ export class IndexerService {
         vote: option === 'Approve' ? 'APPROVE' : 'REJECT',
       },
     });
+
+    if (existingVote) {
+      this.metrics?.recordDuplicateEvent({ eventType: 'vote', network });
+    }
 
     await tx.claim.update({
       where: { id: claimId },
@@ -471,10 +557,38 @@ export class IndexerService {
       updatedAt: new Date().toISOString(),
       ledger: event.ledger,
     });
+    await this.claimSummaryCache?.invalidateClaim(claimId);
+    await this.votePubSub?.publishVote({
+      claimId,
+      voter,
+      vote: option === 'Approve' ? 'yes' : 'no',
+      yesVotes: getNumberValue(data.approve_votes),
+      noVotes: getNumberValue(data.reject_votes),
+      totalVotes: getNumberValue(data.approve_votes) + getNumberValue(data.reject_votes),
+    });
   }
 
   private async handleClaimProcessed(tx: IndexerTx, data: EventPayload, event: SorobanEvent) {
     const claimId = getNumberValue(data.claim_id);
+    const recipient = getStringValue(data.recipient);
+    const amount = getStringValue(data.amount);
+    const asset = data.asset != null && data.asset !== '' ? getStringValue(data.asset) : '';
+
+    const verification = await this.payoutVerification?.verifyTokenTransfer(
+      claimId,
+      event.txHash,
+      amount,
+      recipient,
+      asset,
+    );
+
+    if (!verification?.verified) {
+      this.logger.warn(
+        `Claim ${claimId} payout verification failed, skipping PAID status update. Reason: ${verification?.errorReason ?? 'unknown'}`,
+      );
+      return;
+    }
+
     await tx.claim.updateMany({
       where: { id: claimId, deletedAt: null },
       data: {
@@ -490,6 +604,7 @@ export class IndexerService {
       updatedAt: new Date(event.ledgerClosedAt).toISOString(),
       ledger: event.ledger,
     });
+    await this.claimSummaryCache?.invalidateClaim(claimId);
   }
 
   /**

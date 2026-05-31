@@ -251,13 +251,14 @@ export function ClaimVotePanel({ claimId }: ClaimVotePanelProps) {
   const eligible = eligibility?.eligible === true
   const ineligibleReason = eligibility?.reason
 
-  const canVote =
+  const hasVoteActions =
     !!walletAddress &&
     eligible &&
     !alreadyVoted &&
     voteOpen &&
-    !terminal &&
-    submitState === 'idle'
+    !terminal
+
+  const canVote = hasVoteActions && submitState === 'idle'
 
   const disabledTooltip = !walletAddress
     ? 'Connect your wallet to vote'
@@ -269,7 +270,13 @@ export function ClaimVotePanel({ claimId }: ClaimVotePanelProps) {
           ? 'The voting window for this claim has closed'
           : terminal
             ? 'This claim has already been resolved'
-            : undefined
+            : submitState === 'done'
+              ? 'Your vote has been submitted successfully.'
+              : submitState !== 'idle'
+                ? 'Your vote is being processed.'
+                : undefined
+
+  const showVoteActions = hasVoteActions && submitState === 'idle'
 
   // ── Render ──────────────────────────────────────────────────────────────────
   if (loadingClaim) {
@@ -412,44 +419,48 @@ export function ClaimVotePanel({ claimId }: ClaimVotePanelProps) {
           aria-label="Cast your vote"
           data-tour="cast-vote"
         >
-          <div className="flex gap-3">
-            {/* Approve */}
-            <div className="relative flex-1" title={!canVote ? disabledTooltip : undefined}>
-              <Button
-                className="w-full"
-                variant="default"
-                disabled={!canVote || submitState !== 'idle'}
-                aria-disabled={!canVote}
-                aria-label="Vote to approve this claim"
-                aria-describedby={!canVote ? 'vote-ineligible-msg' : undefined}
-                onClick={() => handleVoteClick('Approve')}
-              >
-                <CheckCircle className="mr-2 h-4 w-4" aria-hidden="true" />
-                Approve
-              </Button>
-            </div>
+          {showVoteActions ? (
+            <div className="flex gap-3">
+              {/* Approve */}
+              <div className="relative flex-1">
+                <Button
+                  className="w-full"
+                  variant="default"
+                  aria-label="Vote to approve this claim"
+                  onClick={() => handleVoteClick('Approve')}
+                >
+                  <CheckCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Approve
+                </Button>
+              </div>
 
-            {/* Reject */}
-            <div className="relative flex-1" title={!canVote ? disabledTooltip : undefined}>
-              <Button
-                className="w-full"
-                variant="destructive"
-                disabled={!canVote || submitState !== 'idle'}
-                aria-disabled={!canVote}
-                aria-label="Vote to reject this claim"
-                aria-describedby={!canVote ? 'vote-ineligible-msg' : undefined}
-                onClick={() => handleVoteClick('Reject')}
-              >
-                <XCircle className="mr-2 h-4 w-4" aria-hidden="true" />
-                Reject
-              </Button>
+              {/* Reject */}
+              <div className="relative flex-1">
+                <Button
+                  className="w-full"
+                  variant="destructive"
+                  aria-label="Vote to reject this claim"
+                  onClick={() => handleVoteClick('Reject')}
+                >
+                  <XCircle className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Reject
+                </Button>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div
+              role="status"
+              className="rounded-xl border bg-muted p-4 text-sm text-muted-foreground"
+              data-testid="claim-vote-unavailable"
+            >
+              {disabledTooltip ?? 'Voting actions are not available at this time.'}
+            </div>
+          )}
         </div>
       )}
 
       {/* Eligibility explanation for screen readers and visible hint */}
-      {!canVote && !terminal && disabledTooltip && (
+      {!showVoteActions && !terminal && disabledTooltip && (
         <p
           id="vote-ineligible-msg"
           role="note"

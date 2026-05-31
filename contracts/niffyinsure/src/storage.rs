@@ -1,7 +1,9 @@
-use soroban_sdk::{contracttype, Address, Env, Vec};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 
 use crate::ledger;
-use crate::types::{Claim, MultiplierTable, Policy, RollingClaimWindowState, VoteOption};
+use crate::types::{
+    Claim, MultiplierTable, Policy, RollingClaimWindowState, VoteDelegation, VoteOption,
+};
 
 // ── TTL constants ─────────────────────────────────────────────────────────────
 ///
@@ -70,6 +72,12 @@ pub enum DataKey {
     Token,
     /// Address where collected premiums are sent.
     Treasury,
+    /// Basis-point protocol fee deducted from each premium payment.
+    ProtocolFeeBps,
+    /// Address receiving the protocol fee portion of premiums.
+    FeeRecipient,
+    /// Minimum treasury solvency ratio required before binding new policies.
+    MinSolvencyRatioBps,
     PremiumTable,
     CalcAddress,
     /// Boolean allowlist flag per asset contract address.
@@ -94,8 +102,21 @@ pub enum DataKey {
     /// Admin-configurable max evidence entries per claim (u32).
     /// Falls back to [`IMAGE_URLS_MAX`] when unset.
     MaxEvidenceCount,
+    /// Admin-configurable minimum evidence entries required per claim (u32).
+    /// Falls back to 0 when unset (no minimum enforced).
+    MinEvidenceCount,
+    /// Maximum vote weight any single voter can contribute when governance token is enabled.
+    /// Falls back to `i128::MAX` (uncapped) when unset.
+    MaxWeightCap,
+    /// Per-policy last resolved claim ledger for cooldown enforcement.
+    LastClaimResolvedLedger(Address, u32),
+    /// Admin-configurable cooldown window in ledgers between claim resolutions per policy.
+    /// Falls back to 0 (no cooldown) when unset.
+    CooldownLedgers,
     /// Last `end_ledger` for which a PolicyExpired event was emitted for this policy term.
     PolicyExpiredEventEndLedger(Address, u32),
+    /// Allowlisted IPFS gateway URL prefixes for evidence validation.
+    GatewayAllowlist,
     // ── Reserved: future governance token (`governance_token` module) ────────
     /// Runtime toggle: only meaningful when crate is built with `governance-token`.
     /// Unset or `false` in MVP; no token logic runs unless feature + flag align.
@@ -104,6 +125,8 @@ pub enum DataKey {
     GovernanceTokenAddress,
     /// Future schema / migration version for governance-token config.
     GovernanceTokenConfigVersion,
+    /// Monotonic governance proposal id counter.
+    ProposalCounter,
     // ── Persistent tier ──────────────────────────────────────────────────
     Policy(Address, u32),
     PolicyCounter(Address),
@@ -112,6 +135,8 @@ pub enum DataKey {
     OpenClaim(Address, u32),
     /// (claim_id, voter_address) -> VoteOption; immutable after first write
     Vote(u64, Address),
+    /// Delegator -> active vote delegation binding.
+    VoteDelegations,
     /// Snapshot of eligible voters captured at claim-filing time.
     ClaimVoters(u64),
     /// Last ledger at which `holder` filed a claim (rate-limit anchor).
@@ -152,8 +177,22 @@ pub enum DataKey {
     // ── Rolling claim cap (persistent) ───────────────────────────────────────
     /// Per-policy rolling window accumulator: (holder, policy_id) → RollingClaimWindowState.
     RollingClaimState(Address, u32),
+    // ── Commit-reveal voting ──────────────────────────────────────────────────
+    /// Commit and reveal phase ledger boundaries for a claim.
+    CommitRevealPhases(u64),
+    /// Voter's 32-byte commitment hash: SHA-256(vote_byte || salt).
+    VoteCommitment(u64, Address),
+    // ── Policy type registry ──────────────────────────────────────────────────
+    /// Admin-managed per-policy-type configuration (payout override, active flag).
+    PolicyTypeConfig(crate::types::PolicyType),
+    /// Whether a policy type is registered and active in the registry.
+    PolicyTypeActive(crate::types::PolicyType),
+    /// Whether the policy type registry is enabled (set on first registration).
+    PolicyTypeRegistryEnabled,
+    // ── Per-asset premium table ───────────────────────────────────────────────
+    /// Asset-specific multiplier table (falls back to global default when absent).
+    AssetPremiumTable(Address),
 }
-
 pub fn has_open_claim(env: &Env, holder: &Address, policy_id: u32) -> bool {
     env.storage()
         .instance()
@@ -282,6 +321,63 @@ pub fn get_treasury(env: &Env) -> Address {
         .instance()
         .get(&DataKey::Treasury)
         .unwrap_or_else(|| env.current_contract_address())
+}
+
+// ── Protocol fee config (instance) ───────────────────────────────────────────
+
+pub fn set_protocol_fee_bps(env: &Env, bps: u32) {
+    env.storage().instance().set(&DataKey::ProtocolFeeBps, &bps);
+}
+
+pub fn get_protocol_fee_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProtocolFeeBps)
+        .unwrap_or(0)
+}
+
+pub fn set_fee_recipient(env: &Env, recipient: &Address) {
+    env.storage().instance().set(&DataKey::FeeRecipient, recipient);
+}
+
+pub fn get_fee_recipient(env: &Env) -> Address {
+    env.storage()
+        .instance()
+        .get(&DataKey::FeeRecipient)
+        .unwrap_or_else(|| env.current_contract_address())
+}
+
+// ── Solvency config (instance) ───────────────────────────────────────────────
+
+pub fn set_min_solvency_ratio_bps(env: &Env, bps: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MinSolvencyRatioBps, &bps);
+}
+
+pub fn get_min_solvency_ratio_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MinSolvencyRatioBps)
+        .unwrap_or(0)
+}
+
+pub fn outstanding_approved_claim_obligations(env: &Env, asset: &Address) -> i128 {
+    let claim_counter = get_claim_counter(env);
+    let mut total: i128 = 0;
+
+    for claim_id in 1..=claim_counter {
+        if let Some(claim) = get_claim(env, claim_id) {
+            if claim.status == crate::types::ClaimStatus::Approved && claim.asset == *asset {
+                let net = claim.amount.saturating_sub(claim.deductible);
+                if net > 0 {
+                    total = total.saturating_add(net);
+                }
+            }
+        }
+    }
+
+    total
 }
 
 // ── Governance: claim voting duration (instance) ─────────────────────────────
@@ -462,6 +558,19 @@ pub fn set_pause_flags(env: &Env, flags: &PauseFlags) {
     env.storage().instance().set(&DataKey::Paused, flags);
 }
 
+/// Set the pause reason. Pass `None` to clear (on unpause).
+pub fn set_pause_reason(env: &Env, reason: Option<crate::types::PauseReason>) {
+    match reason {
+        Some(r) => env.storage().instance().set(&DataKey::PauseReason, &r),
+        None => env.storage().instance().remove(&DataKey::PauseReason),
+    }
+}
+
+/// Get the current pause reason. Returns `None` when unpaused or reason not set.
+pub fn get_pause_reason(env: &Env) -> Option<crate::types::PauseReason> {
+    env.storage().instance().get(&DataKey::PauseReason)
+}
+
 // ── Claim counter (instance) ──────────────────────────────────────────────────
 
 pub fn get_claim_counter(env: &Env) -> u64 {
@@ -486,6 +595,53 @@ pub fn get_voters(env: &Env) -> Vec<Address> {
         .instance()
         .get(&DataKey::Voters)
         .unwrap_or_else(|| Vec::new(env))
+}
+
+// ── Governance proposals ─────────────────────────────────────────────────────
+
+pub fn next_proposal_id(env: &Env) -> u64 {
+    let next = env
+        .storage()
+        .instance()
+        .get::<_, u64>(&DataKey::ProposalCounter)
+        .unwrap_or(0)
+        .saturating_add(1);
+    env.storage()
+        .instance()
+        .set(&DataKey::ProposalCounter, &next);
+    next
+}
+
+pub fn set_proposal(env: &Env, proposal: &crate::governance::Proposal) {
+    let key = DataKey::Proposal(proposal.proposal_id);
+    env.storage().persistent().set(&key, proposal);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn get_proposal(env: &Env, proposal_id: u64) -> Option<crate::governance::Proposal> {
+    env.storage().persistent().get(&DataKey::Proposal(proposal_id))
+}
+
+pub fn remove_proposal(env: &Env, proposal_id: u64) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Proposal(proposal_id));
+}
+
+pub fn set_proposal_vote(env: &Env, proposal_id: u64, voter: &Address, approve: bool) {
+    let key = DataKey::ProposalVote(proposal_id, voter.clone());
+    env.storage().persistent().set(&key, &approve);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn has_proposal_vote(env: &Env, proposal_id: u64, voter: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::ProposalVote(proposal_id, voter.clone()))
 }
 
 pub fn set_voters(env: &Env, voters: &Vec<Address>) {
@@ -647,6 +803,87 @@ pub fn get_vote(env: &Env, claim_id: u64, voter: &Address) -> Option<VoteOption>
         .get(&DataKey::Vote(claim_id, voter.clone()))
 }
 
+// ── Vote delegations (instance) ───────────────────────────────────────────────
+
+pub fn get_vote_delegations(env: &Env) -> Map<Address, VoteDelegation> {
+    env.storage()
+        .instance()
+        .get(&DataKey::VoteDelegations)
+        .unwrap_or_else(|| Map::new(env))
+}
+
+pub fn set_vote_delegations(env: &Env, delegations: &Map<Address, VoteDelegation>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::VoteDelegations, delegations);
+}
+
+pub fn get_vote_delegation(env: &Env, delegator: &Address) -> Option<VoteDelegation> {
+    get_vote_delegations(env).get(delegator.clone())
+}
+
+pub fn set_vote_delegation(env: &Env, delegator: &Address, delegation: &VoteDelegation) {
+    let mut delegations = get_vote_delegations(env);
+    delegations.set(delegator.clone(), delegation.clone());
+    set_vote_delegations(env, &delegations);
+}
+
+pub fn remove_vote_delegation(env: &Env, delegator: &Address) {
+    let mut delegations = get_vote_delegations(env);
+    if delegations.remove(delegator.clone()).is_some() {
+        set_vote_delegations(env, &delegations);
+    }
+}
+
+pub fn has_active_vote_delegation(env: &Env, delegator: &Address, now: u32) -> bool {
+    get_vote_delegation(env, delegator)
+        .map(|delegation| delegation.expiry_ledger >= now)
+        .unwrap_or(false)
+}
+
+pub fn resolve_vote_delegation_target(
+    env: &Env,
+    start: &Address,
+    now: u32,
+) -> Result<Address, crate::validate::Error> {
+    let mut current = start.clone();
+    let mut seen: Vec<Address> = Vec::new(env);
+
+    loop {
+        if seen.iter().any(|addr| addr == current) {
+            return Err(crate::validate::Error::CircularDelegation);
+        }
+        seen.push_back(current.clone());
+
+        let Some(delegation) = get_vote_delegation(env, &current) else {
+            return Ok(current);
+        };
+
+        if delegation.expiry_ledger < now {
+            return Ok(current);
+        }
+
+        current = delegation.delegate;
+    }
+}
+
+pub fn delegated_vote_weight(
+    env: &Env,
+    claim_id: u64,
+    target: &Address,
+    now: u32,
+) -> Result<u32, crate::validate::Error> {
+    let voters = get_claim_voters(env, claim_id);
+    let mut total: u32 = 0;
+    for voter in voters.iter() {
+        let resolved = resolve_vote_delegation_target(env, &voter, now)?;
+        if resolved == *target {
+            total = total.saturating_add(get_active_policy_count(env, &voter));
+        }
+    }
+    Ok(total)
+}
+
 // ── Claim voters snapshot (persistent) ───────────────────────────────────────
 
 pub fn snapshot_claim_voters(env: &Env, claim_id: u64) {
@@ -802,6 +1039,96 @@ pub fn get_max_evidence_count(env: &Env) -> u32 {
         .get(&DataKey::MaxEvidenceCount)
         .unwrap_or(crate::types::IMAGE_URLS_MAX)
 }
+
+// ── Min evidence count (instance) ────────────────────────────────────────────
+
+/// Set admin-configurable minimum evidence entries required per claim.
+/// Caller must enforce `min <= current max`.
+pub fn set_min_evidence_count(env: &Env, count: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MinEvidenceCount, &count);
+}
+
+/// Current minimum evidence count. Falls back to 0 (no minimum) when unset.
+pub fn get_min_evidence_count(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MinEvidenceCount)
+        .unwrap_or(0)
+}
+
+// ── Max weight cap (instance) ─────────────────────────────────────────────────
+
+/// Set admin-configurable maximum vote weight cap for governance token voting.
+pub fn set_max_weight_cap(env: &Env, cap: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxWeightCap, &cap);
+}
+
+/// Current max weight cap. Falls back to `i128::MAX` (uncapped) when unset.
+pub fn get_max_weight_cap(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxWeightCap)
+        .unwrap_or(i128::MAX)
+}
+
+// ── Per-policy cooldown (persistent) ─────────────────────────────────────────
+
+/// Record the ledger at which the last claim for `(holder, policy_id)` was resolved.
+pub fn set_last_claim_resolved_ledger(env: &Env, holder: &Address, policy_id: u32, ledger: u32) {
+    let key = DataKey::LastClaimResolvedLedger(holder.clone(), policy_id);
+    env.storage().persistent().set(&key, &ledger);
+    env.storage().persistent().extend_ttl(
+        &key,
+        PERSISTENT_TTL_THRESHOLD,
+        PERSISTENT_TTL_EXTEND_TO,
+    );
+}
+
+/// Last resolved claim ledger for `(holder, policy_id)`. Returns `None` if no claim has been resolved.
+pub fn get_last_claim_resolved_ledger(env: &Env, holder: &Address, policy_id: u32) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::LastClaimResolvedLedger(holder.clone(), policy_id))
+}
+
+// ── Cooldown ledgers (instance) ───────────────────────────────────────────────
+
+/// Set admin-configurable cooldown window in ledgers between claim resolutions per policy.
+pub fn set_cooldown_ledgers(env: &Env, ledgers: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::CooldownLedgers, &ledgers);
+}
+
+/// Current cooldown window in ledgers. Falls back to 0 (no cooldown) when unset.
+pub fn get_cooldown_ledgers(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::CooldownLedgers)
+        .unwrap_or(0)
+}
+
+// ── Gateway allowlist (instance) ──────────────────────────────────────────────
+
+/// Set the allowlisted IPFS gateway URL prefixes for evidence validation.
+pub fn set_gateway_allowlist(env: &Env, gateways: &Vec<String>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::GatewayAllowlist, gateways);
+}
+
+/// Get the allowlisted IPFS gateway URL prefixes. Returns empty vec if not set.
+pub fn get_gateway_allowlist(env: &Env) -> Vec<String> {
+    env.storage()
+        .instance()
+        .get(&DataKey::GatewayAllowlist)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
 // ── Appeal vote (persistent) ──────────────────────────────────────────────────
 
 pub fn set_appeal_vote(env: &Env, claim_id: u64, voter: &Address, vote: &VoteOption) {
@@ -1176,6 +1503,90 @@ pub fn get_claim_ttl_info(env: &Env, claim_id: u64) -> Option<u32> {
     }
 }
 
+// ── Policy type registry (instance) ──────────────────────────────────────────
+
+/// Get the admin-configured settings for a policy type.
+/// Returns `None` when no config has been set (all defaults apply).
+pub fn get_policy_type_config(
+    env: &Env,
+    policy_type: &crate::types::PolicyType,
+) -> Option<crate::types::PolicyTypeConfig> {
+    env.storage()
+        .instance()
+        .get(&DataKey::PolicyTypeConfig(policy_type.clone()))
+}
+
+/// Persist admin-configured settings for a policy type.
+pub fn set_policy_type_config(
+    env: &Env,
+    policy_type: &crate::types::PolicyType,
+    config: &crate::types::PolicyTypeConfig,
+) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PolicyTypeConfig(policy_type.clone()), config);
+}
+
+/// Returns `true` if the policy type is registered and active in the registry.
+pub fn is_policy_type_active(env: &Env, policy_type: &crate::types::PolicyType) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::PolicyTypeActive(policy_type.clone()))
+        .unwrap_or(false)
+}
+
+/// Set the active flag for a policy type in the registry.
+pub fn set_policy_type_active(env: &Env, policy_type: &crate::types::PolicyType, active: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PolicyTypeActive(policy_type.clone()), &active);
+    // Mark the registry as enabled on first registration.
+    if active {
+        env.storage()
+            .instance()
+            .set(&DataKey::PolicyTypeRegistryEnabled, &true);
+    }
+}
+
+/// Returns `true` if the policy type registry has been activated (at least one type registered).
+pub fn is_policy_type_registry_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::PolicyTypeRegistryEnabled)
+        .unwrap_or(false)
+}
+
+// ── Per-asset premium table (instance) ───────────────────────────────────────
+
+/// Get the asset-specific multiplier table for `asset`.
+/// Returns `None` when no asset-specific table has been set (caller should fall back to default).
+pub fn get_asset_premium_table(
+    env: &Env,
+    asset: &Address,
+) -> Option<crate::types::MultiplierTable> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AssetPremiumTable(asset.clone()))
+}
+
+/// Persist an asset-specific multiplier table.
+pub fn set_asset_premium_table(
+    env: &Env,
+    asset: &Address,
+    table: &crate::types::MultiplierTable,
+) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AssetPremiumTable(asset.clone()), table);
+}
+
+/// Remove an asset-specific multiplier table (reverts to global default).
+pub fn remove_asset_premium_table(env: &Env, asset: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::AssetPremiumTable(asset.clone()));
+}
+
 // ── Non-experimental stubs (panic guards) ────────────────────────────────────
 
 #[cfg(not(feature = "experimental"))]
@@ -1211,4 +1622,98 @@ pub fn is_oracle_enabled(_env: &Env) -> bool {
 #[cfg(not(feature = "experimental"))]
 pub fn set_oracle_enabled(_env: &Env, _enabled: bool) {
     panic!("ORACLE_TRIGGERS_DISABLED")
+}
+
+// ── Issue #583: Claim fraud score ─────────────────────────────────────────────
+
+pub fn set_claim_fraud_score(env: &Env, claim_id: u64, score: u32) {
+    let key = DataKey::ClaimFraudScore(claim_id);
+    env.storage().persistent().set(&key, &score);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+pub fn get_claim_fraud_score(env: &Env, claim_id: u64) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ClaimFraudScore(claim_id))
+}
+
+pub fn set_fraud_score_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::FraudScoreThreshold, &threshold);
+}
+
+/// Threshold above which elevated quorum is required. Default: 75.
+pub fn get_fraud_score_threshold(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::FraudScoreThreshold)
+        .unwrap_or(75u32)
+}
+
+pub fn set_elevated_quorum_bps(env: &Env, bps: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ElevatedQuorumBps, &bps);
+}
+
+/// Elevated quorum bps used when fraud score exceeds threshold. Default: 7500 (75%).
+pub fn get_elevated_quorum_bps(env: &Env) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ElevatedQuorumBps)
+        .unwrap_or(7500u32)
+}
+
+// ── Issue #587: Asset-specific claim amount bounds ────────────────────────────
+
+pub fn set_allowed_asset_config(env: &Env, asset: &Address, config: &crate::types::AllowedAssetConfig) {
+    env.storage()
+        .instance()
+        .set(&DataKey::AllowedAssetConfig(asset.clone()), config);
+}
+
+pub fn get_allowed_asset_config(env: &Env, asset: &Address) -> Option<crate::types::AllowedAssetConfig> {
+    env.storage()
+        .instance()
+        .get(&DataKey::AllowedAssetConfig(asset.clone()))
+}
+
+// ── Issue #585: Admin role delegation ────────────────────────────────────────
+
+pub fn set_delegation(env: &Env, operator: &Address, record: &crate::types::DelegationRecord) {
+    env.storage()
+        .instance()
+        .set(&DataKey::Delegation(operator.clone()), record);
+}
+
+pub fn get_delegation(env: &Env, operator: &Address) -> Option<crate::types::DelegationRecord> {
+    env.storage()
+        .instance()
+        .get(&DataKey::Delegation(operator.clone()))
+}
+
+pub fn remove_delegation(env: &Env, operator: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::Delegation(operator.clone()));
+}
+
+// ── Issue #581: Reinsurance pool ──────────────────────────────────────────────
+
+pub fn set_reinsurance_contract(env: &Env, addr: &Address) {
+    env.storage()
+        .instance()
+        .set(&DataKey::ReinsuranceContract, addr);
+}
+
+pub fn get_reinsurance_contract(env: &Env) -> Option<Address> {
+    env.storage().instance().get(&DataKey::ReinsuranceContract)
+}
+
+pub fn clear_reinsurance_contract(env: &Env) {
+    env.storage().instance().remove(&DataKey::ReinsuranceContract);
 }

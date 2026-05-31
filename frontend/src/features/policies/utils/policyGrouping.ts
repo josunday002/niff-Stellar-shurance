@@ -1,18 +1,30 @@
-import type { PolicyDto } from '@/features/policies/api';
+import type { PolicyDto } from '../api';
 
-// 7 days × 24h × 3600s / 5s per ledger
-export const EXPIRING_SOON_LEDGER_THRESHOLD = 120_960;
+export const EXPIRING_SOON_LEDGER_THRESHOLD = 7 * 24 * 3600 / 5;
 
 export type PolicyExpiryGroup = 'active' | 'expiringSoon' | 'expired';
 
-export function classifyPolicyExpiryGroup(policy: PolicyDto): PolicyExpiryGroup {
-  if (!policy.is_active || policy.expiry_countdown.ledgers_remaining < 0) return 'expired';
-  if (policy.expiry_countdown.ledgers_remaining <= EXPIRING_SOON_LEDGER_THRESHOLD) return 'expiringSoon';
-  return 'active';
+export interface PolicyExpiryGroups {
+  active: PolicyDto[];
+  expiringSoon: PolicyDto[];
+  expired: PolicyDto[];
 }
 
-export function groupPoliciesByExpiry(policies: PolicyDto[]): Record<PolicyExpiryGroup, PolicyDto[]> {
-  const groups: Record<PolicyExpiryGroup, PolicyDto[]> = { active: [], expiringSoon: [], expired: [] };
-  for (const policy of policies) groups[classifyPolicyExpiryGroup(policy)].push(policy);
-  return groups;
+export function classifyPolicyExpiryGroup(policy: PolicyDto): PolicyExpiryGroup {
+  if (!policy.is_active) return 'expired';
+  return policy.expiry_countdown.ledgers_remaining <= EXPIRING_SOON_LEDGER_THRESHOLD
+    ? 'expiringSoon'
+    : 'active';
+}
+
+export function groupPoliciesByExpiry(policies: PolicyDto[]): PolicyExpiryGroups {
+  return policies.reduce<PolicyExpiryGroups>((groups, policy) => {
+    const group = classifyPolicyExpiryGroup(policy);
+    groups[group].push(policy);
+    return groups;
+  }, {
+    active: [],
+    expiringSoon: [],
+    expired: [],
+  });
 }
