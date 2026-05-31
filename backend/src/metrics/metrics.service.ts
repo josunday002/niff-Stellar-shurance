@@ -43,6 +43,8 @@ export class MetricsService implements OnModuleInit {
   readonly rpcErrorTotal: client.Counter<string>;
   /** result: hit | miss | bypass — quote simulation Redis cache */
   readonly quoteSimulationCacheTotal: client.Counter<string>;
+  /** result: hit | miss — claims board summary Redis cache */
+  readonly claimSummaryCacheTotal: client.Counter<string>;
 
   // ── Slow query metrics ────────────────────────────────────────────────────
   /** Total queries exceeding SLOW_QUERY_THRESHOLD_MS. */
@@ -173,6 +175,13 @@ export class MetricsService implements OnModuleInit {
       registers: [this.registry],
     });
 
+    this.claimSummaryCacheTotal = new client.Counter({
+      name: 'claim_summary_cache_requests_total',
+      help: 'Claims board summary cache lookups',
+      labelNames: ['result'],
+      registers: [this.registry],
+    });
+
     this.slowQueriesTotal = new client.Counter({
       name: 'db_slow_queries_total',
       help: 'Total DB queries exceeding the slow query threshold',
@@ -288,6 +297,10 @@ export class MetricsService implements OnModuleInit {
 
   recordQuoteSimulationCache(result: 'hit' | 'miss' | 'bypass') {
     this.quoteSimulationCacheTotal.inc({ result });
+  }
+
+  recordClaimSummaryCache(result: 'hit' | 'miss') {
+    this.claimSummaryCacheTotal.inc({ result });
   }
 
   recordIndexerLag(opts: { network: string; lag: number }) {

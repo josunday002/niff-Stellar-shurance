@@ -10,9 +10,12 @@ import {
   isWarningRow,
 } from '../events/parser-registry';
 import { ClaimEventsService } from '../events/claim-events.service';
+import { ClaimPayoutVerificationService } from '../claims/services/claim-payout-verification.service';
 import { rpc as SorobanRpc, scValToNative } from '@stellar/stellar-sdk';
 import { tryNormalizeAddress } from '../common/utils/normalize-address';
 import { QuoteSimulationCacheService } from '../quote/quote-simulation-cache.service';
+import { ClaimSummaryCacheService } from '../claims/services/claim-summary-cache.service';
+import { VotePubSubService } from '../graphql/vote-pubsub.service';
 
 type IndexerTx = Prisma.TransactionClient;
 type SorobanEvent = SorobanRpc.Api.EventResponse;
@@ -92,9 +95,12 @@ export class IndexerService {
     private readonly prisma: PrismaService,
     private readonly soroban: SorobanService,
     private readonly config: ConfigService,
+    @Optional() private readonly payoutVerification: ClaimPayoutVerificationService,
     @Optional() private readonly metrics?: MetricsService,
     @Optional() private readonly claimEvents?: ClaimEventsService,
     @Optional() private readonly quoteSimulationCache?: QuoteSimulationCacheService,
+    @Optional() private readonly claimSummaryCache?: ClaimSummaryCacheService,
+    @Optional() private readonly votePubSub?: VotePubSubService,
   ) {
     this.networkId = this.config.get<string>('STELLAR_NETWORK', 'testnet');
     this.gapThresholdLedgers = this.config.get<number>('INDEXER_GAP_ALERT_THRESHOLD_LEDGERS', 100);
@@ -481,6 +487,7 @@ export class IndexerService {
       updatedAt: new Date().toISOString(),
       ledger: event.ledger,
     });
+    await this.claimSummaryCache?.invalidateClaim(claimId);
   }
 
   private async handleVoteCast(
@@ -528,10 +535,38 @@ export class IndexerService {
       updatedAt: new Date().toISOString(),
       ledger: event.ledger,
     });
+    await this.claimSummaryCache?.invalidateClaim(claimId);
+    await this.votePubSub?.publishVote({
+      claimId,
+      voter,
+      vote: option === 'Approve' ? 'yes' : 'no',
+      yesVotes: getNumberValue(data.approve_votes),
+      noVotes: getNumberValue(data.reject_votes),
+      totalVotes: getNumberValue(data.approve_votes) + getNumberValue(data.reject_votes),
+    });
   }
 
   private async handleClaimProcessed(tx: IndexerTx, data: EventPayload, event: SorobanEvent) {
     const claimId = getNumberValue(data.claim_id);
+    const recipient = getStringValue(data.recipient);
+    const amount = getStringValue(data.amount);
+    const asset = data.asset != null && data.asset !== '' ? getStringValue(data.asset) : '';
+
+    const verification = await this.payoutVerification?.verifyTokenTransfer(
+      claimId,
+      event.txHash,
+      amount,
+      recipient,
+      asset,
+    );
+
+    if (!verification?.verified) {
+      this.logger.warn(
+        `Claim ${claimId} payout verification failed, skipping PAID status update. Reason: ${verification?.errorReason ?? 'unknown'}`,
+      );
+      return;
+    }
+
     await tx.claim.updateMany({
       where: { id: claimId, deletedAt: null },
       data: {
@@ -547,6 +582,7 @@ export class IndexerService {
       updatedAt: new Date(event.ledgerClosedAt).toISOString(),
       ledger: event.ledger,
     });
+    await this.claimSummaryCache?.invalidateClaim(claimId);
   }
 
   /**
