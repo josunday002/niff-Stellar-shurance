@@ -66,7 +66,8 @@
 // or deadline-plurality approval, which is controlled by the DAO snapshot, not
 // the admin. The admin cannot flip a `Rejected` claim to `Approved`.
 use crate::{
-    events, ledger, storage,
+    events::{self, ClaimEvidenceUpdated, PayoutRecipientWarning},
+    ledger, storage,
     types::{
         Claim, ClaimEvidenceEntry, ClaimProcessed, ClaimStatus, ClaimStatusHistoryEntry,
         TerminationReason, VoteOption, CLAIM_STATUS_HISTORY_MAX, STRIKE_DEACTIVATION_THRESHOLD,
@@ -830,7 +831,8 @@ pub fn process_claim(env: &Env, claim_id: u64) -> Result<(), Error> {
     }
     // SAFETY: Rejected and Processing claims are explicitly blocked here.
     // No path can circumvent this guard to reach payout().
-    if claim.status != ClaimStatus::Approved {
+    // AppealApproved is also accepted — same payout flow as Approved.
+    if claim.status != ClaimStatus::Approved && claim.status != ClaimStatus::AppealApproved {
         return Err(Error::ClaimNotApproved);
     }
 
@@ -1463,4 +1465,339 @@ pub fn disburse_installment(env: &Env, claim_id: u64, amount: i128) -> Result<()
 
     storage::set_claim(env, &claim);
     Ok(())
+}
+
+// ── Appeal mechanism ──────────────────────────────────────────────────────────
+//
+// After a claim is Rejected, the claimant has `APPEAL_OPEN_WINDOW_LEDGERS` to
+// open an appeal. The appeal runs a fresh vote round with a higher quorum
+// requirement (APPEAL_ELEVATED_QUORUM_BPS) and a shorter deadline
+// (APPEAL_VOTE_WINDOW_LEDGERS). Only one appeal per claim is allowed
+// (MAX_APPEALS_PER_CLAIM = 1).
+//
+// State machine during appeal:
+//   Rejected → UnderAppeal  (open_appeal called within window)
+//   UnderAppeal → AppealApproved  (vote or finalize; approve wins)
+//   UnderAppeal → AppealRejected  (vote or finalize; reject wins or no quorum)
+//
+// The elevated quorum for appeal rounds uses APPEAL_ELEVATED_QUORUM_BPS (7500 = 75%).
+// This can be overridden by the admin via `admin_set_elevated_quorum_bps`.
+
+/// Quorum basis points used for appeal vote rounds when no elevated quorum is configured.
+/// 75% (7500 / 10_000) is intentionally higher than the default 50% base quorum
+/// to reflect the higher evidentiary bar for reversing a prior rejection.
+pub const APPEAL_ELEVATED_QUORUM_BPS: u32 = 7_500;
+
+/// Emitted when a claimant opens an appeal on a rejected claim.
+///
+/// Topic layout: ["niffyinsure", "appeal_opened", claim_id]
+/// Data: { policy_id, claimant, appeal_deadline_ledger, quorum_bps, at_ledger }
+#[contractevent(topics = ["niffyinsure", "appeal_opened"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppealOpened {
+    #[topic]
+    pub claim_id: u64,
+    pub policy_id: u32,
+    pub claimant: Address,
+    /// Voting deadline for this appeal round (ledger sequence).
+    pub appeal_deadline_ledger: u32,
+    /// Quorum basis points required for this appeal round.
+    pub quorum_bps: u32,
+    pub at_ledger: u32,
+}
+
+/// Emitted when an appeal vote round resolves (approved or rejected).
+///
+/// Topic layout: ["niffyinsure", "appeal_resolved", claim_id]
+#[contractevent(topics = ["niffyinsure", "appeal_resolved"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppealResolved {
+    #[topic]
+    pub claim_id: u64,
+    pub policy_id: u32,
+    pub claimant: Address,
+    pub outcome: ClaimStatus,
+    pub approve_votes: u32,
+    pub reject_votes: u32,
+    pub at_ledger: u32,
+}
+
+/// Emitted when an appeal vote is cast.
+///
+/// Topic layout: ["niffyinsure", "appeal_vote_cast", claim_id]
+#[contractevent(topics = ["niffyinsure", "appeal_vote_cast"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppealVoteCast {
+    #[topic]
+    pub claim_id: u64,
+    #[topic]
+    pub voter: Address,
+    pub vote: VoteOption,
+    pub at_ledger: u32,
+}
+
+/// Claimant-only: open an appeal on a rejected claim.
+///
+/// Preconditions:
+///   - `claim.status == Rejected`
+///   - `now <= claim.appeal_open_deadline_ledger` (within appeal window)
+///   - `claim.appeals_count < MAX_APPEALS_PER_CLAIM` (only one appeal allowed)
+///
+/// Transitions: `Rejected → UnderAppeal`
+/// Resets vote counts, sets `appeal_deadline_ledger`, requires elevated quorum
+/// (`APPEAL_ELEVATED_QUORUM_BPS` or admin-configured `elevated_quorum_bps`).
+///
+/// A fresh voter snapshot is taken at appeal opening so new policy-holders
+/// can participate in the appeal vote (and departed ones cannot).
+pub fn open_appeal(env: &Env, claimant: &Address, claim_id: u64) -> Result<(), Error> {
+    storage::assert_claims_not_paused(env);
+
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
+    // Only the original claimant may open an appeal.
+    if claimant != &claim.claimant {
+        return Err(Error::NotEligibleVoter);
+    }
+
+    // Claim must be in Rejected status to appeal.
+    if claim.status != ClaimStatus::Rejected {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+
+    let now = env.ledger().sequence();
+
+    // Appeal window: must be called within APPEAL_OPEN_WINDOW_LEDGERS of rejection.
+    if now > claim.appeal_open_deadline_ledger {
+        return Err(Error::AppealWindowClosed);
+    }
+
+    // Cap: only one appeal allowed per claim.
+    if claim.appeals_count >= ledger::MAX_APPEALS_PER_CLAIM {
+        return Err(Error::AppealAlreadyUsed);
+    }
+
+    // Reset vote tallies for the appeal round.
+    claim.appeal_approve_votes = 0;
+    claim.appeal_reject_votes = 0;
+
+    // Set the appeal voting deadline.
+    claim.appeal_deadline_ledger = now
+        .checked_add(ledger::APPEAL_VOTE_WINDOW_LEDGERS)
+        .ok_or(Error::Overflow)?;
+
+    claim.appeals_count = claim.appeals_count.saturating_add(1);
+
+    // Determine quorum for this appeal round. Use the admin-configured elevated quorum
+    // when set; fall back to APPEAL_ELEVATED_QUORUM_BPS.
+    let appeal_quorum_bps = {
+        let configured = storage::get_elevated_quorum_bps(env);
+        // elevated_quorum_bps defaults to 7500; if admin hasn't changed it, we use
+        // our own constant to be explicit. Both values happen to be the same default.
+        configured.max(APPEAL_ELEVATED_QUORUM_BPS)
+    };
+
+    // Snapshot the appeal-round quorum so subsequent admin changes don't affect it.
+    storage::set_appeal_claim_quorum_bps(env, claim_id, appeal_quorum_bps);
+
+    // Take a fresh voter snapshot for the appeal round.
+    storage::snapshot_appeal_voters(env, claim_id);
+
+    // Transition to UnderAppeal.
+    let old_status = claim.status.clone();
+    claim.status = ClaimStatus::UnderAppeal;
+    push_status_transition(&mut claim.status_history, ClaimStatus::UnderAppeal, now);
+
+    // Re-open the "open claim" slot so finalization bookkeeping is consistent.
+    storage::set_open_claim(env, &claim.claimant, claim.policy_id, true);
+
+    storage::set_claim(env, &claim);
+
+    crate::events::emit_claim_status_changed(env, claim_id, old_status, ClaimStatus::UnderAppeal);
+
+    AppealOpened {
+        claim_id,
+        policy_id: claim.policy_id,
+        claimant: claimant.clone(),
+        appeal_deadline_ledger: claim.appeal_deadline_ledger,
+        quorum_bps: appeal_quorum_bps,
+        at_ledger: now,
+    }
+    .publish(env);
+
+    Ok(())
+}
+
+/// Cast a vote in an active appeal round.
+///
+/// Window check: `now <= claim.appeal_deadline_ledger`.
+/// Only voters present in the appeal snapshot electorate may vote.
+/// Duplicate votes are rejected.
+/// If quorum is reached mid-vote, the appeal resolves immediately.
+pub fn vote_on_appeal(
+    env: &Env,
+    voter: &Address,
+    claim_id: u64,
+    vote: &VoteOption,
+) -> Result<ClaimStatus, Error> {
+    storage::assert_claims_not_paused(env);
+
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
+    if claim.status != ClaimStatus::UnderAppeal {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+
+    let now = env.ledger().sequence();
+
+    // Appeal voting window (inclusive deadline).
+    if !ledger::is_claim_voting_open(now, claim.appeal_deadline_ledger) {
+        return Err(Error::VotingWindowClosed);
+    }
+
+    // Voter must be in the appeal snapshot.
+    if !storage::has_appeal_voters(env, claim_id) {
+        return Err(Error::VoterSnapshotExpired);
+    }
+    let snapshot = storage::get_appeal_voters(env, claim_id);
+    if !snapshot.iter().any(|v| v == *voter) {
+        return Err(Error::NotEligibleVoter);
+    }
+
+    // Check delegation: delegated voters must cast through their delegate.
+    let resolved_target = storage::resolve_vote_delegation_target(env, voter, now)?;
+    if resolved_target != *voter {
+        return Err(Error::VoteDelegated);
+    }
+
+    // Duplicate appeal vote check.
+    if storage::get_appeal_vote(env, claim_id, voter).is_some() {
+        return Err(Error::DuplicateVote);
+    }
+
+    storage::set_appeal_vote(env, claim_id, voter, vote);
+
+    let vote_weight: u32 = if crate::governance_token::governance_token_effective_enabled(env) {
+        let balance = storage::get_holder_active_policy_count(env, voter) as i128;
+        let cap = storage::get_max_weight_cap(env);
+        balance.min(cap).max(1) as u32
+    } else {
+        1
+    };
+
+    match vote {
+        VoteOption::Approve => {
+            claim.appeal_approve_votes = claim.appeal_approve_votes.saturating_add(vote_weight)
+        }
+        VoteOption::Reject => {
+            claim.appeal_reject_votes = claim.appeal_reject_votes.saturating_add(vote_weight)
+        }
+    }
+
+    AppealVoteCast {
+        claim_id,
+        voter: voter.clone(),
+        vote: vote.clone(),
+        at_ledger: now,
+    }
+    .publish(env);
+
+    let eligible = snapshot.len();
+    let cast = claim.appeal_approve_votes + claim.appeal_reject_votes;
+    let quorum_bps = storage::get_appeal_claim_quorum_bps(env, claim_id);
+
+    let maybe_resolved = resolve_plurality_if_quorum_met(
+        claim.appeal_approve_votes,
+        claim.appeal_reject_votes,
+        cast,
+        eligible,
+        quorum_bps,
+    );
+
+    if let Some(raw) = maybe_resolved {
+        // Map base-claim status to appeal outcome statuses.
+        let outcome = if raw == ClaimStatus::Approved {
+            ClaimStatus::AppealApproved
+        } else {
+            ClaimStatus::AppealRejected
+        };
+        finalize_appeal_outcome(env, &mut claim, outcome, now);
+    }
+
+    let status = claim.status.clone();
+    storage::set_claim(env, &claim);
+    Ok(status)
+}
+
+/// Permissionless keeper: finalize an appeal vote after its deadline passes.
+///
+/// Window check: `now > claim.appeal_deadline_ledger`.
+/// Uses participation quorum; if quorum not met, appeal is rejected (insurer-favored default).
+pub fn finalize_appeal(env: &Env, claim_id: u64) -> Result<ClaimStatus, Error> {
+    storage::assert_claims_not_paused(env);
+
+    let mut claim = storage::get_claim(env, claim_id).ok_or(Error::ClaimNotFound)?;
+
+    if claim.status != ClaimStatus::UnderAppeal {
+        return Err(Error::ClaimAlreadyTerminal);
+    }
+
+    let now = env.ledger().sequence();
+    if ledger::is_claim_voting_open(now, claim.appeal_deadline_ledger) {
+        return Err(Error::VotingWindowStillOpen);
+    }
+
+    let eligible = if storage::has_appeal_voters(env, claim_id) {
+        storage::get_appeal_voters(env, claim_id).len()
+    } else {
+        // Snapshot expired — use eligible_voter_count from original filing as fallback.
+        claim.eligible_voter_count
+    };
+
+    let cast = claim.appeal_approve_votes + claim.appeal_reject_votes;
+    let quorum_bps = storage::get_appeal_claim_quorum_bps(env, claim_id);
+
+    let outcome = if participation_quorum_met(cast, eligible, quorum_bps)
+        && claim.appeal_approve_votes > claim.appeal_reject_votes
+    {
+        ClaimStatus::AppealApproved
+    } else {
+        ClaimStatus::AppealRejected
+    };
+
+    finalize_appeal_outcome(env, &mut claim, outcome, now);
+
+    let status = claim.status.clone();
+    storage::set_claim(env, &claim);
+    Ok(status)
+}
+
+/// Internal: apply a resolved appeal outcome to the claim record.
+///
+/// Sets `status`, pushes history entry, closes the open-claim slot when terminal,
+/// sets `payout_deadline_ledger` on AppealApproved, and emits `AppealResolved`.
+fn finalize_appeal_outcome(env: &Env, claim: &mut crate::types::Claim, outcome: ClaimStatus, now: u32) {
+    let old_status = claim.status.clone();
+    claim.status = outcome.clone();
+    push_status_transition(&mut claim.status_history, outcome.clone(), now);
+
+    if outcome == ClaimStatus::AppealApproved && claim.payout_deadline_ledger == 0 {
+        claim.payout_deadline_ledger = now.saturating_add(ledger::PAYOUT_TIMEOUT_LEDGERS);
+        claim.dispute_deadline_ledger = now.saturating_add(ledger::DEFAULT_DISPUTE_WINDOW_LEDGERS);
+    }
+
+    // Close the open-claim slot on terminal appeal outcomes.
+    storage::set_open_claim(env, &claim.claimant, claim.policy_id, false);
+
+    crate::events::emit_claim_status_changed(env, claim.claim_id, old_status, outcome.clone());
+
+    AppealResolved {
+        claim_id: claim.claim_id,
+        policy_id: claim.policy_id,
+        claimant: claim.claimant.clone(),
+        outcome,
+        approve_votes: claim.appeal_approve_votes,
+        reject_votes: claim.appeal_reject_votes,
+        at_ledger: now,
+    }
+    .publish(env);
 }

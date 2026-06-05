@@ -705,3 +705,31 @@ pub fn emit_policy_transferred(
     }
     .publish(env);
 }
+
+// ── Claim evidence updated event ──────────────────────────────────────────────
+
+/// Emitted by `add_claim_evidence` when claimant replaces evidence before voting.
+/// topics: ("niffyinsure", "claim_evidence_updated", claim_id)
+#[contractevent(topics = ["niffyinsure", "claim_evidence_updated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimEvidenceUpdated {
+    #[topic]
+    pub claim_id: u64,
+    pub policy_id: u32,
+    pub evidence_hashes: Vec<BytesN<32>>,
+    pub at_ledger: u32,
+}
+
+// ── Payout recipient warning event ────────────────────────────────────────────
+
+/// Emitted when payout is sent to a contract address (phishing risk warning).
+/// topics: ("niffyinsure", "payout_recipient_warning", claim_id)
+#[contractevent(topics = ["niffyinsure", "payout_recipient_warning"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PayoutRecipientWarning {
+    #[topic]
+    pub claim_id: u64,
+    pub recipient: Address,
+    pub asset: Address,
+    pub at_ledger: u32,
+}

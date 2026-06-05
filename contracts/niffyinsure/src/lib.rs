@@ -88,6 +88,22 @@ struct ReinsuranceContractUpdated {
     pub reinsurance_contract: Address,
 }
 
+/// Emitted when the KYC whitelist enforcement toggle changes.
+#[contractevent(topics = ["niffyinsure", "whitelist_toggled"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WhitelistToggled {
+    pub enabled: bool,
+}
+
+/// Emitted when an address is added to or removed from the KYC whitelist.
+#[contractevent(topics = ["niffyinsure", "whitelist_address_updated"])]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct WhitelistAddressUpdated {
+    #[topic]
+    pub holder: Address,
+    pub allowed: bool,
+}
+
 #[contractevent(topics = ["niffyinsure", "quorum_updated"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct QuorumUpdated {
@@ -627,6 +643,41 @@ impl NiffyInsure {
         let admin = storage::get_admin(&env);
         admin.require_auth();
         claim::dispute_claim(&env, claim_id)
+    }
+
+    // ── Appeal mechanism (Issue #1) ───────────────────────────────────────────
+
+    /// Claimant-only: open an appeal on a rejected claim within the appeal window.
+    ///
+    /// Preconditions: status == Rejected, within appeal_open_deadline_ledger, appeals_count < 1.
+    /// Transitions: Rejected → UnderAppeal. Resets vote counts, sets appeal_deadline_ledger,
+    /// snapshots a fresh voter electorate, and requires elevated quorum.
+    pub fn open_appeal(
+        env: Env,
+        claimant: Address,
+        claim_id: u64,
+    ) -> Result<(), validate::Error> {
+        claimant.require_auth();
+        claim::open_appeal(&env, &claimant, claim_id)
+    }
+
+    /// Cast a vote in an active appeal round (UnderAppeal status).
+    pub fn vote_on_appeal(
+        env: Env,
+        voter: Address,
+        claim_id: u64,
+        vote: types::VoteOption,
+    ) -> Result<types::ClaimStatus, validate::Error> {
+        voter.require_auth();
+        claim::vote_on_appeal(&env, &voter, claim_id, &vote)
+    }
+
+    /// Permissionless keeper: finalize an appeal after its voting deadline passes.
+    pub fn finalize_appeal(
+        env: Env,
+        claim_id: u64,
+    ) -> Result<types::ClaimStatus, validate::Error> {
+        claim::finalize_appeal(&env, claim_id)
     }
 
     pub fn get_claim(env: Env, claim_id: u64) -> Result<types::Claim, validate::Error> {
@@ -1693,6 +1744,47 @@ impl NiffyInsure {
     /// Read the configured reinsurance contract address (None if not set).
     pub fn get_reinsurance_contract(env: Env) -> Option<Address> {
         storage::get_reinsurance_contract(&env)
+    }
+
+    // ── KYC whitelist (Issue #2) ──────────────────────────────────────────────
+    //
+    // Allows the admin to gate `initiate_policy` calls for KYC compliance without
+    // redeployment. When `whitelist_enabled` is `true`, only addresses added via
+    // `admin_add_to_whitelist` may initiate policies; others receive `NotWhitelisted`.
+    // When disabled, the whitelist map is ignored and all addresses may bind policies.
+
+    /// Admin: enable or disable KYC whitelist enforcement for initiate_policy calls.
+    pub fn admin_set_whitelist_enabled(env: Env, enabled: bool) {
+        let _admin = admin::require_admin(&env);
+        storage::bump_instance(&env);
+        storage::set_whitelist_enabled(&env, enabled);
+        WhitelistToggled { enabled }.publish(&env);
+    }
+
+    /// Read-only: whether KYC whitelist enforcement is currently active.
+    pub fn get_whitelist_enabled(env: Env) -> bool {
+        storage::is_whitelist_enabled(&env)
+    }
+
+    /// Admin: add an address to the KYC whitelist.
+    pub fn admin_add_to_whitelist(env: Env, holder: Address) {
+        let _admin = admin::require_admin(&env);
+        storage::bump_instance(&env);
+        storage::set_whitelisted(&env, &holder, true);
+        WhitelistAddressUpdated { holder, allowed: true }.publish(&env);
+    }
+
+    /// Admin: remove an address from the KYC whitelist.
+    pub fn admin_remove_from_whitelist(env: Env, holder: Address) {
+        let _admin = admin::require_admin(&env);
+        storage::bump_instance(&env);
+        storage::set_whitelisted(&env, &holder, false);
+        WhitelistAddressUpdated { holder, allowed: false }.publish(&env);
+    }
+
+    /// Read-only: whether `holder` is on the KYC whitelist.
+    pub fn is_whitelisted(env: Env, holder: Address) -> bool {
+        storage::is_whitelisted(&env, &holder)
     }
 }
 

@@ -192,6 +192,16 @@ pub enum DataKey {
     // ── Per-asset premium table ───────────────────────────────────────────────
     /// Asset-specific multiplier table (falls back to global default when absent).
     AssetPremiumTable(Address),
+    // ── KYC whitelist (Issue #2) ──────────────────────────────────────────────
+    /// Whether the KYC whitelist is currently enforced for initiate_policy calls.
+    WhitelistEnabled,
+    /// Per-address whitelist entry for KYC compliance gating.
+    Whitelisted(Address),
+    // ── Appeal mechanism (Issue #1) ───────────────────────────────────────────
+    /// Voter snapshot for an appeal round (separate from the base-claim snapshot).
+    AppealVoters(u64),
+    /// Per-claim quorum bps snapshot frozen at appeal-open time (immutable for that round).
+    AppealClaimQuorumBps(u64),
 }
 pub fn has_open_claim(env: &Env, holder: &Address, policy_id: u32) -> bool {
     env.storage()
@@ -1716,4 +1726,103 @@ pub fn get_reinsurance_contract(env: &Env) -> Option<Address> {
 
 pub fn clear_reinsurance_contract(env: &Env) {
     env.storage().instance().remove(&DataKey::ReinsuranceContract);
+}
+
+// ── Appeal mechanism — voter snapshot (persistent) ────────────────────────────
+//
+// A fresh snapshot is taken at appeal-open time so voter eligibility is
+// evaluated against the registry at that moment, not at the original filing.
+// The snapshot TTL mirrors the claim-voter snapshot constants since appeal
+// windows are the same length as base vote windows.
+
+/// Capture the current voter registry as the appeal-round electorate.
+pub fn snapshot_appeal_voters(env: &Env, claim_id: u64) {
+    let voters = get_voters(env);
+    let key = DataKey::AppealVoters(claim_id);
+    env.storage().persistent().set(&key, &voters);
+    env.storage().persistent().extend_ttl(
+        &key,
+        CLAIM_VOTER_SNAPSHOT_TTL_THRESHOLD,
+        CLAIM_VOTER_SNAPSHOT_EXTEND_TO,
+    );
+}
+
+/// Returns `true` if the appeal voter snapshot entry still exists.
+pub fn has_appeal_voters(env: &Env, claim_id: u64) -> bool {
+    env.storage()
+        .persistent()
+        .has(&DataKey::AppealVoters(claim_id))
+}
+
+/// Retrieve the appeal voter snapshot, returning empty vec if expired.
+pub fn get_appeal_voters(env: &Env, claim_id: u64) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AppealVoters(claim_id))
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+// ── Appeal mechanism — quorum snapshot (persistent) ───────────────────────────
+
+/// Persist the elevated quorum bps for this claim's appeal round (immutable after open_appeal).
+pub fn set_appeal_claim_quorum_bps(env: &Env, claim_id: u64, bps: u32) {
+    let key = DataKey::AppealClaimQuorumBps(claim_id);
+    env.storage().persistent().set(&key, &bps);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+}
+
+/// Retrieve the appeal-round quorum snapshot. Falls back to elevated default when missing.
+pub fn get_appeal_claim_quorum_bps(env: &Env, claim_id: u64) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::AppealClaimQuorumBps(claim_id))
+        .unwrap_or(crate::claim::APPEAL_ELEVATED_QUORUM_BPS)
+}
+
+// ── KYC whitelist (Issue #2) ──────────────────────────────────────────────────
+// `PolicyError::NotWhitelisted` unless the holder is in the whitelist map.
+// When `false`, the whitelist map is ignored and all addresses may bind policies.
+//
+// Storage layout:
+//   `WhitelistEnabled` (instance bool) — fast single-read enforcement toggle.
+//   `Whitelisted(address)` (instance bool) — per-address presence flag.
+//     Instance storage is appropriate here because the whitelist is expected to
+//     be a bounded, frequently-read set (KYC approvals, not unbounded data).
+
+/// Returns `true` if whitelist enforcement is currently active.
+pub fn is_whitelist_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::WhitelistEnabled)
+        .unwrap_or(false)
+}
+
+/// Admin-only: enable or disable whitelist enforcement.
+pub fn set_whitelist_enabled(env: &Env, enabled: bool) {
+    env.storage()
+        .instance()
+        .set(&DataKey::WhitelistEnabled, &enabled);
+}
+
+/// Returns `true` if `holder` is on the whitelist (regardless of enforcement state).
+pub fn is_whitelisted(env: &Env, holder: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Whitelisted(holder.clone()))
+        .unwrap_or(false)
+}
+
+/// Add or remove an address from the whitelist.
+pub fn set_whitelisted(env: &Env, holder: &Address, allowed: bool) {
+    if allowed {
+        env.storage()
+            .instance()
+            .set(&DataKey::Whitelisted(holder.clone()), &true);
+    } else {
+        env.storage()
+            .instance()
+            .remove(&DataKey::Whitelisted(holder.clone()));
+    }
 }

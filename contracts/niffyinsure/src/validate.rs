@@ -55,6 +55,14 @@ pub enum Error {
     RateLimitExceeded = 42,
     /// Evidence URL does not match IPFS or allowlisted gateway format.
     InvalidEvidenceUrl = 43,
+    /// Claim evidence update must happen before any votes are cast.
+    ClaimEvidenceUpdateNotAllowed = 44,
+    /// Evidence count must fit the configured min/max bounds.
+    EvidenceCountOutOfBounds = 45,
+    /// Treasury deposits must be strictly positive.
+    ZeroTreasuryDeposit = 46,
+    /// Caller is not on the authorized treasury depositor allowlist.
+    UnauthorizedTreasuryDepositor = 47,
     /// Contract payout recipients must be allowlisted.
     PayoutRecipientContractNotAllowlisted = 48,
     /// Admin `set_voting_duration_ledgers` value outside allowed [min, max] range.
@@ -91,6 +99,22 @@ pub enum Error {
     ClaimBatchTooLarge = 63,
     /// Payout attempted while dispute window is still active.
     DisputeWindowActive = 64,
+    /// Appeal window has closed; claimant can no longer open an appeal.
+    AppealWindowClosed = 65,
+    /// Claim has already used its one allowed appeal.
+    AppealAlreadyUsed = 66,
+    /// Voter has an active delegation and must vote through their delegate.
+    VoteDelegated = 67,
+    /// Circular vote delegation detected.
+    CircularDelegation = 68,
+    /// Claim amount is below the minimum evidence count requirement.
+    InsufficientEvidence = 69,
+    /// Per-policy cooldown window has not yet elapsed since the last resolved claim.
+    CooldownActive = 70,
+    /// Protocol fee basis points exceed the maximum allowed.
+    ProtocolFeeOutOfBounds = 71,
+    /// Minimum solvency ratio basis points outside documented bounds.
+    SolvencyRatioOutOfBounds = 72,
 }
 
 pub fn validate_quorum_bps(bps: u32) -> Result<(), Error> {
@@ -550,11 +574,4 @@ mod evidence_url_validation_tests {
         });
     }
 }
-    /// Claim evidence update must happen before any votes are cast.
-    ClaimEvidenceUpdateNotAllowed = 44,
-    /// Evidence count must fit the configured min/max bounds.
-    EvidenceCountOutOfBounds = 45,
-    /// Treasury deposits must be strictly positive.
-    ZeroTreasuryDeposit = 46,
-    /// Caller is not on the authorized treasury depositor allowlist.
-    UnauthorizedTreasuryDepositor = 47,
+
