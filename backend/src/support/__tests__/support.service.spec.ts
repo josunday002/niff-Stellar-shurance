@@ -2,7 +2,7 @@ import { SupportService } from '../support.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CaptchaService } from '../captcha.service';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 
 const mockTicket = {
   id: 'uuid-1',
@@ -11,6 +11,16 @@ const mockTicket = {
   message: 'Test message body here',
   status: 'OPEN',
   ipHash: 'hash',
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
+
+const mockFaqItem = {
+  id: 'faq-1',
+  question: 'What is NiffyInsur?',
+  answer: 'A decentralized insurance protocol.',
+  category: 'General',
+  displayOrder: 0,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
@@ -26,6 +36,15 @@ function makePrisma(ticket = mockTicket) {
     },
     adminAuditLog: { create: jest.fn().mockResolvedValue({}) },
     faqStat: { upsert: jest.fn().mockResolvedValue({}) },
+    faqItem: {
+      findMany: jest.fn().mockResolvedValue([mockFaqItem]),
+      findUnique: jest.fn().mockResolvedValue(mockFaqItem),
+      create: jest.fn().mockResolvedValue(mockFaqItem),
+      update: jest.fn().mockResolvedValue({ ...mockFaqItem, question: 'Updated?' }),
+      delete: jest.fn().mockResolvedValue(mockFaqItem),
+      aggregate: jest.fn().mockResolvedValue({ _max: { displayOrder: 0 } }),
+    },
+    $transaction: jest.fn().mockImplementation((ops: Promise<unknown>[]) => Promise.all(ops)),
   } as unknown as PrismaService;
 }
 
@@ -91,5 +110,45 @@ describe('SupportService', () => {
     await expect(svc.updateTicketStatus('bad-id', { status: 'RESOLVED' }, 'GADMIN')).rejects.toThrow(
       BadRequestException,
     );
+  });
+});
+
+describe('SupportService — FAQ CRUD', () => {
+  it('listFaqItems returns ordered items', async () => {
+    const prisma = makePrisma();
+    const svc = new SupportService(prisma, makeCaptcha(), makeConfig());
+    const items = await svc.listFaqItems();
+    expect(items).toHaveLength(1);
+    expect(prisma.faqItem.findMany).toHaveBeenCalledWith({ orderBy: { displayOrder: 'asc' } });
+  });
+
+  it('createFaqItem assigns next displayOrder', async () => {
+    const prisma = makePrisma();
+    const svc = new SupportService(prisma, makeCaptcha(), makeConfig());
+    await svc.createFaqItem({ question: 'Q?', answer: 'A answer here.' });
+    expect(prisma.faqItem.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ displayOrder: 1 }) }),
+    );
+  });
+
+  it('updateFaqItem throws NotFoundException when item missing', async () => {
+    const prisma = makePrisma();
+    (prisma.faqItem.findUnique as jest.Mock).mockResolvedValue(null);
+    const svc = new SupportService(prisma, makeCaptcha(), makeConfig());
+    await expect(svc.updateFaqItem('missing', { question: 'X?' })).rejects.toThrow(NotFoundException);
+  });
+
+  it('deleteFaqItem throws NotFoundException when item missing', async () => {
+    const prisma = makePrisma();
+    (prisma.faqItem.findUnique as jest.Mock).mockResolvedValue(null);
+    const svc = new SupportService(prisma, makeCaptcha(), makeConfig());
+    await expect(svc.deleteFaqItem('missing')).rejects.toThrow(NotFoundException);
+  });
+
+  it('reorderFaqItems runs one update per entry in a transaction', async () => {
+    const prisma = makePrisma();
+    const svc = new SupportService(prisma, makeCaptcha(), makeConfig());
+    await svc.reorderFaqItems({ items: [{ id: 'faq-1', displayOrder: 2 }] });
+    expect(prisma.$transaction).toHaveBeenCalled();
   });
 });
