@@ -11,6 +11,7 @@ import { formatXlm } from '@/lib/formatTokenAmount'
 import { fetchClaimDetail, type ClaimDetailResponse } from '@/lib/api/claim-detail'
 import { useLatestLedger } from '@/hooks/use-latest-ledger'
 import { DeadlineCountdown } from './DeadlineCountdown'
+import { PayoutCountdown } from './PayoutCountdown'
 import { QuorumProgressBar } from './QuorumProgressBar'
 import { ClaimVotePanel } from './claim-vote-panel'
 
@@ -261,6 +262,20 @@ export function ClaimDetailView({ claimId }: ClaimDetailViewProps) {
             </div>
           </CardContent>
         </Card>
+
+        {claim.metadata.status === 'approved' && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Payout &amp; dispute window</CardTitle>
+              <CardDescription>
+                Approved claims enter a dispute window before the payout auto-executes.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <PayoutCountdown approvedAt={claim.metadata.updatedAt} />
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>
