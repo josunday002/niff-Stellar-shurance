@@ -69,6 +69,20 @@ export default function AdminPage() {
         <SolvencyWidget jwt={jwt} />
         <ReindexWidget jwt={jwt} />
       </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Governance</CardTitle>
+          <CardDescription>Manage voter registrations and quorum settings.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-3">
+          <Button variant="outline" asChild>
+            <Link href="/admin/governance/voters">Manage Voters</Link>
+          </Button>
+          <Button variant="outline" asChild>
+            <Link href="/admin/governance/quorum">Quorum Settings</Link>
+          </Button>
+        </CardContent>
+      </Card>
       <FeatureFlagsWidget jwt={jwt} />
       <AuditLogWidget jwt={jwt} />
     </main>
