@@ -6,7 +6,9 @@ import { useEffect } from 'react'
 import { useForm } from 'react-hook-form'
 
 import { Label } from '@/components/ui/label'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { QuoteFormSchema, type QuoteFormData } from '@/lib/schemas/quote'
+import { usePolicyRegions } from '@/hooks/use-policy-regions'
 import { useWallet } from '@/features/wallet'
 
 interface Props {
@@ -28,6 +30,7 @@ const selectClass = (err?: string) =>
 
 export function QuoteForm({ onChange }: Props) {
   const { address } = useWallet()
+  const { regions, loading: regionsLoading } = usePolicyRegions()
 
   const {
     register,
@@ -64,12 +67,16 @@ export function QuoteForm({ onChange }: Props) {
 
       <div className="space-y-1">
         <Label htmlFor="region">Region Risk Tier</Label>
-        <select id="region" className={selectClass(errors.region?.message)} {...register('region')}>
-          <option value="">Select a region…</option>
-          <option value="Low">Low Risk</option>
-          <option value="Medium">Medium Risk</option>
-          <option value="High">High Risk</option>
-        </select>
+        <SearchableSelect
+          id="region"
+          options={regions}
+          value={values.region ?? ''}
+          onChange={(val) => setValue('region', val as QuoteFormData['region'], { shouldValidate: true })}
+          placeholder="Select a region…"
+          loading={regionsLoading}
+          aria-invalid={!!errors.region?.message}
+          className={errors.region?.message ? '[&_button]:border-destructive' : ''}
+        />
         <FieldError message={errors.region?.message} />
       </div>
 

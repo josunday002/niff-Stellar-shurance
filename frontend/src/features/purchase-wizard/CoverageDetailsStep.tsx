@@ -7,7 +7,9 @@ import { useForm } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
+import { SearchableSelect } from '@/components/ui/searchable-select'
 import { QuoteFormSchema, type QuoteFormData } from '@/lib/schemas/quote'
+import { usePolicyRegions } from '@/hooks/use-policy-regions'
 import { useWallet } from '@/features/wallet'
 
 interface Props {
@@ -28,6 +30,7 @@ function FieldError({ message }: { message?: string }) {
 
 export function CoverageDetailsStep({ defaultValues, onNext, onChange }: Props) {
   const { address } = useWallet()
+  const { regions, loading: regionsLoading } = usePolicyRegions()
 
   const {
     register,
@@ -87,16 +90,16 @@ export function CoverageDetailsStep({ defaultValues, onNext, onChange }: Props) 
 
       <div className="space-y-1">
         <Label htmlFor="region">Region Risk Tier</Label>
-        <select
+        <SearchableSelect
           id="region"
-          className={`w-full h-11 rounded-md border bg-background px-3 py-2 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${errors.region ? 'border-destructive' : 'border-input'}`}
-          {...register('region')}
-        >
-          <option value="">Select a region…</option>
-          <option value="Low">Low Risk</option>
-          <option value="Medium">Medium Risk</option>
-          <option value="High">High Risk</option>
-        </select>
+          options={regions}
+          value={watch('region') ?? ''}
+          onChange={(val) => setValue('region', val as QuoteFormData['region'], { shouldValidate: true })}
+          placeholder="Select a region…"
+          loading={regionsLoading}
+          aria-invalid={!!errors.region}
+          className={errors.region ? '[&_button]:border-destructive' : ''}
+        />
         <FieldError message={errors.region?.message} />
       </div>
 
