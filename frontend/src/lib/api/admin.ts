@@ -73,6 +73,22 @@ export interface BulkUpdateResult {
   updated: number
 }
 
+export interface RegisteredVoter {
+  address: string
+  registeredAt: string
+}
+
+export interface QuorumSettings {
+  quorum_bps: number
+  updatedAt: string
+}
+
+export interface QuorumImpact {
+  activeClaims: number
+  claimsBelowNewQuorum: number
+  claimsAboveNewQuorum: number
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const adminApi = {
@@ -141,5 +157,40 @@ export const adminApi = {
       method: 'POST',
       headers: authHeaders(jwt),
       body: JSON.stringify({ claimIds, status, dryRun }),
+    }),
+
+  listVoters: (jwt: string) =>
+    apiFetch<RegisteredVoter[]>(`${base()}/governance/voters`, {
+      headers: authHeaders(jwt),
+    }),
+
+  batchRegisterVoters: (jwt: string, addresses: string[]) =>
+    apiFetch<{ registered: number }>(`${base()}/governance/voters/batch-register`, {
+      method: 'POST',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ addresses }),
+    }),
+
+  removeVoter: (jwt: string, address: string) =>
+    apiFetch<{ removed: boolean }>(`${base()}/governance/voters/${encodeURIComponent(address)}`, {
+      method: 'DELETE',
+      headers: authHeaders(jwt),
+    }),
+
+  getQuorumSettings: (jwt: string) =>
+    apiFetch<QuorumSettings>(`${base()}/governance/quorum`, {
+      headers: authHeaders(jwt),
+    }),
+
+  updateQuorumBps: (jwt: string, quorumBps: number) =>
+    apiFetch<QuorumSettings>(`${base()}/governance/quorum`, {
+      method: 'PUT',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ quorum_bps: quorumBps }),
+    }),
+
+  getActiveClaimsImpact: (jwt: string, newQuorumBps: number) =>
+    apiFetch<QuorumImpact>(`${base()}/governance/quorum/impact?quorum_bps=${newQuorumBps}`, {
+      headers: authHeaders(jwt),
     }),
 }
