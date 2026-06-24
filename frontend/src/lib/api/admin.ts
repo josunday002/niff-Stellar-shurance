@@ -73,6 +73,25 @@ export interface BulkUpdateResult {
   updated: number
 }
 
+export interface OperatorDelegation {
+  id: string
+  /** Stellar address of the delegated operator */
+  delegate: string
+  /** Ledger at which the delegation expires */
+  expiryLedger: number
+  /** Ledgers remaining until expiry (may be negative if already expired) */
+  ledgersRemaining: number
+  /** ISO timestamp when the delegation was granted */
+  grantedAt: string
+  /** Stellar address of the admin who granted this delegation */
+  grantedBy: string
+}
+
+export interface GrantDelegationParams {
+  delegate: string
+  expiryLedger: number
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const adminApi = {
@@ -141,5 +160,21 @@ export const adminApi = {
       method: 'POST',
       headers: authHeaders(jwt),
       body: JSON.stringify({ claimIds, status, dryRun }),
+    }),
+
+  listDelegations: (jwt: string) =>
+    apiFetch<OperatorDelegation[]>(`${base()}/delegations`, { headers: authHeaders(jwt) }),
+
+  grantDelegation: (jwt: string, params: GrantDelegationParams) =>
+    apiFetch<OperatorDelegation>(`${base()}/delegations`, {
+      method: 'POST',
+      headers: authHeaders(jwt),
+      body: JSON.stringify(params),
+    }),
+
+  revokeDelegation: (jwt: string, id: string) =>
+    apiFetch<void>(`${base()}/delegations/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(jwt),
     }),
 }
