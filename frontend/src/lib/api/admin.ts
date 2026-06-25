@@ -73,23 +73,18 @@ export interface BulkUpdateResult {
   updated: number
 }
 
-export interface OperatorDelegation {
+export interface AllowedAsset {
   id: string
-  /** Stellar address of the delegated operator */
-  delegate: string
-  /** Ledger at which the delegation expires */
-  expiryLedger: number
-  /** Ledgers remaining until expiry (may be negative if already expired) */
-  ledgersRemaining: number
-  /** ISO timestamp when the delegation was granted */
-  grantedAt: string
-  /** Stellar address of the admin who granted this delegation */
-  grantedBy: string
+  contractId: string
+  symbol: string
+  decimals: number
+  isAllowed: boolean
 }
 
-export interface GrantDelegationParams {
-  delegate: string
-  expiryLedger: number
+export interface AddAssetParams {
+  contractId: string
+  symbol: string
+  decimals: number
 }
 
 // ── API calls ──────────────────────────────────────────────────────────────
@@ -162,18 +157,25 @@ export const adminApi = {
       body: JSON.stringify({ claimIds, status, dryRun }),
     }),
 
-  listDelegations: (jwt: string) =>
-    apiFetch<OperatorDelegation[]>(`${base()}/delegations`, { headers: authHeaders(jwt) }),
+  listAssets: (jwt: string) =>
+    apiFetch<AllowedAsset[]>(`${base()}/assets`, { headers: authHeaders(jwt) }),
 
-  grantDelegation: (jwt: string, params: GrantDelegationParams) =>
-    apiFetch<OperatorDelegation>(`${base()}/delegations`, {
+  addAsset: (jwt: string, params: AddAssetParams) =>
+    apiFetch<AllowedAsset>(`${base()}/assets`, {
       method: 'POST',
       headers: authHeaders(jwt),
       body: JSON.stringify(params),
     }),
 
-  revokeDelegation: (jwt: string, id: string) =>
-    apiFetch<void>(`${base()}/delegations/${encodeURIComponent(id)}`, {
+  setAssetAllowed: (jwt: string, id: string, isAllowed: boolean) =>
+    apiFetch<AllowedAsset>(`${base()}/assets/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ isAllowed }),
+    }),
+
+  removeAsset: (jwt: string, id: string) =>
+    apiFetch<void>(`${base()}/assets/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       headers: authHeaders(jwt),
     }),
