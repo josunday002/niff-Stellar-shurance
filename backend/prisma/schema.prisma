@@ -329,6 +329,16 @@ model ClaimComment {
   @@map("claim_comments")
 }
 
+/// Tracks voters registered on-chain via admin governance actions.
+model RegisteredVoter {
+  walletAddress  String   @id @map("wallet_address")
+  displayName    String?  @map("display_name")
+  registeredBy   String   @map("registered_by")
+  registeredAt   DateTime @default(now()) @map("registered_at")
+
+  @@map("registered_voters")
+}
+
 /// Off-chain profile for a wallet holder. Created on first authenticated GET /profile.
 model HolderProfile {
   walletAddress         String   @id @map("wallet_address")

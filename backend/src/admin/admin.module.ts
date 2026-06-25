@@ -15,6 +15,7 @@ import { QueueMonitorService } from '../queues/queue-monitor.service';
 import { BullBoardMiddleware } from './bull-board.middleware';
 import { MetricsModule } from '../metrics/metrics.module';
 import { CacheModule } from '../cache/cache.module';
+import { RpcModule } from '../rpc/rpc.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { CacheModule } from '../cache/cache.module';
     RateLimitModule,
     MetricsModule,
     CacheModule,
+    RpcModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

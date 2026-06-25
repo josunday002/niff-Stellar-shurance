@@ -65,6 +65,22 @@ export default function AdminPage() {
   return (
     <main className="mx-auto max-w-5xl px-4 py-8 space-y-8">
       <h1 className="text-2xl font-semibold">Admin Dashboard</h1>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Governance</CardTitle>
+          <CardDescription>Manage protocol governance parameters.</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-3">
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/governance">Quorum settings</Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link href="/admin/governance/voters">Voter management</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-6 md:grid-cols-2">
         <SolvencyWidget jwt={jwt} />
         <ReindexWidget jwt={jwt} />

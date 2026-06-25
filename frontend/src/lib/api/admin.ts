@@ -9,6 +9,33 @@ function authHeaders(jwt: string) {
   return { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' }
 }
 
+// ── Governance Types ────────────────────────────────────────────────────────
+
+export interface RegisteredVoter {
+  walletAddress: string
+  displayName?: string | null
+  registeredBy: string
+  registeredAt: string
+}
+
+export interface QuorumSettings {
+  quorum_bps: number
+}
+
+export interface QuorumImpact {
+  totalActiveClaims: number
+  affectedClaims: Array<{
+    claimId: number
+    currentQuorumBps: number
+    newQuorumBps: number
+    eligibleVoters: number
+    currentRequired: number
+    newRequired: number
+    status: string
+  }>
+  quorumBps: number | null
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export interface SolvencySnapshot {
@@ -141,5 +168,45 @@ export const adminApi = {
       method: 'POST',
       headers: authHeaders(jwt),
       body: JSON.stringify({ claimIds, status, dryRun }),
+    }),
+
+  // ── Governance: Voters ─────────────────────────────────────────────
+
+  listVoters: (jwt: string) =>
+    apiFetch<RegisteredVoter[]>(`${base()}/governance/voters`, {
+      headers: authHeaders(jwt),
+    }),
+
+  batchRegisterVoters: (jwt: string, voters: string[]) =>
+    apiFetch<{ unsignedXdr: string }>(`${base()}/governance/voters/batch-register`, {
+      method: 'POST',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ voters }),
+    }),
+
+  removeVoter: (jwt: string, voter: string) =>
+    apiFetch<{ unsignedXdr: string }>(`${base()}/governance/voters/remove`, {
+      method: 'POST',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ voter }),
+    }),
+
+  // ── Governance: Quorum ─────────────────────────────────────────────
+
+  getQuorum: (jwt: string) =>
+    apiFetch<QuorumSettings>(`${base()}/governance/quorum`, {
+      headers: authHeaders(jwt),
+    }),
+
+  setQuorum: (jwt: string, bps: number) =>
+    apiFetch<{ unsignedXdr: string }>(`${base()}/governance/quorum`, {
+      method: 'POST',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ bps }),
+    }),
+
+  getQuorumImpact: (jwt: string, bps: number) =>
+    apiFetch<QuorumImpact>(`${base()}/governance/quorum/impact?bps=${bps}`, {
+      headers: authHeaders(jwt),
     }),
 }

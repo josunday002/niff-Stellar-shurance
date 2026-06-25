@@ -18,7 +18,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { IsEnum, IsOptional, IsString } from 'class-validator';
+import { IsArray, IsEnum, IsInt, IsOptional, IsString, Max, Min, ArrayNotEmpty, Matches } from 'class-validator';
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -37,6 +37,29 @@ import { QueueMonitorService } from '../queues/queue-monitor.service';
 import { SolvencyMonitoringService } from '../maintenance/solvency-monitoring.service';
 import { AdminTenantsService } from './admin-tenants.service';
 import { AdminStatsService } from './admin-stats.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { SorobanService } from '../rpc/soroban.service';
+
+class BatchRegisterVotersDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  @Matches(/^G[A-Z2-7]{55}$/, { each: true, message: 'Each voter must be a valid Stellar public key (G...)' })
+  voters!: string[];
+}
+
+class RemoveVoterDto {
+  @IsString()
+  @Matches(/^G[A-Z2-7]{55}$/, { message: 'voter must be a valid Stellar public key (G...)' })
+  voter!: string;
+}
+
+class SetQuorumBpsDto {
+  @IsInt()
+  @Min(1)
+  @Max(10000)
+  bps!: number;
+}
 
 class PrivacyRequestDto {
   @IsString() subjectWalletAddress!: string;
@@ -76,7 +99,156 @@ export class AdminController {
     private readonly solvencyMonitoringService: SolvencyMonitoringService,
     private readonly tenantsService: AdminTenantsService,
     private readonly adminStatsService: AdminStatsService,
+    private readonly prisma: PrismaService,
+    private readonly sorobanService: SorobanService,
   ) {}
+
+  // ── Governance: Voters ────────────────────────────────────────────
+
+  /**
+   * GET /admin/governance/voters
+   *
+   * List all registered voters from the local tracking table.
+   */
+  @Get('governance/voters')
+  @ApiOperation({ summary: 'List registered voters' })
+  async listVoters() {
+    return this.prisma.registeredVoter.findMany({
+      orderBy: { registeredAt: 'desc' },
+    });
+  }
+
+  /**
+   * POST /admin/governance/voters/batch-register
+   *
+   * Build an unsigned batch_register_voter transaction for the given voters.
+   * Returns the unsigned XDR for admin wallet signing.
+   */
+  @Post('governance/voters/batch-register')
+  @ApiOperation({ summary: 'Build batch voter registration transaction' })
+  async batchRegisterVoters(@Body() dto: BatchRegisterVotersDto, @Req() req: AdminRequest) {
+    const admin = req.user?.walletAddress ?? '';
+    const result = await this.sorobanService.buildBatchRegisterVotersTransaction({
+      admin,
+      voters: dto.voters,
+    });
+
+    await this.auditService.write({
+      actor: admin,
+      action: 'governance_voters_batch_register',
+      payload: { voterCount: dto.voters.length, voters: dto.voters },
+      ipAddress: req.ip,
+    });
+
+    return result;
+  }
+
+  /**
+   * POST /admin/governance/voters/remove
+   *
+   * Build an unsigned remove_voter transaction for a single voter.
+   * Returns the unsigned XDR for admin wallet signing.
+   */
+  @Post('governance/voters/remove')
+  @ApiOperation({ summary: 'Build remove voter transaction' })
+  async removeVoter(@Body() dto: RemoveVoterDto, @Req() req: AdminRequest) {
+    const admin = req.user?.walletAddress ?? '';
+    const result = await this.sorobanService.buildRemoveVoterTransaction({
+      admin,
+      voter: dto.voter,
+    });
+
+    await this.auditService.write({
+      actor: admin,
+      action: 'governance_voters_remove',
+      payload: { voter: dto.voter },
+      ipAddress: req.ip,
+    });
+
+    return result;
+  }
+
+  // ── Governance: Quorum ────────────────────────────────────────────
+
+  /**
+   * GET /admin/governance/quorum
+   *
+   * Returns the current quorum_bps value from the contract (via simulation).
+   */
+  @Get('governance/quorum')
+  @ApiOperation({ summary: 'Get current quorum_bps value' })
+  async getQuorum() {
+    const result = await this.sorobanService.simulateGetQuorumBps();
+    return { quorum_bps: result };
+  }
+
+  /**
+   * POST /admin/governance/quorum
+   *
+   * Build an unsigned admin_set_quorum_bps transaction.
+   * Returns the unsigned XDR for admin wallet signing.
+   */
+  @Post('governance/quorum')
+  @ApiOperation({ summary: 'Build set quorum_bps transaction' })
+  async setQuorum(@Body() dto: SetQuorumBpsDto, @Req() req: AdminRequest) {
+    const admin = req.user?.walletAddress ?? '';
+    const result = await this.sorobanService.buildSetQuorumBpsTransaction({
+      admin,
+      bps: dto.bps,
+    });
+
+    await this.auditService.write({
+      actor: admin,
+      action: 'governance_quorum_update',
+      payload: { bps: dto.bps },
+      ipAddress: req.ip,
+    });
+
+    return result;
+  }
+
+  /**
+   * GET /admin/governance/quorum/impact
+   *
+   * Returns the number of active (non-finalized) claims that would be
+   * affected by changing quorum_bps to the given value.
+   */
+  @Get('governance/quorum/impact')
+  @ApiOperation({ summary: 'Preview impact of quorum change on active claims' })
+  async getQuorumImpact(@Query('bps') bps?: string, @Req() req?: AdminRequest) {
+    const targetBps = bps ? parseInt(bps, 10) : null;
+    if (targetBps !== null && (isNaN(targetBps) || targetBps < 1 || targetBps > 10000)) {
+      throw new BadRequestException('bps must be between 1 and 10000');
+    }
+
+    const activeClaims = await this.prisma.claim.findMany({
+      where: { isFinalized: false, deletedAt: null },
+      include: { votes: true },
+    });
+
+    const impacted = await Promise.all(activeClaims.map(async (claim) => {
+      const eligibleVoters = claim.approveVotes + claim.rejectVotes;
+      const currentRequired = Math.max(1, Math.floor(eligibleVoters / 2) + 1);
+      const newRequired = targetBps !== null
+        ? Math.max(1, Math.floor((eligibleVoters * targetBps) / 10000))
+        : currentRequired;
+      return {
+        claimId: claim.id,
+        currentQuorumBps: 5000,
+        newQuorumBps: targetBps ?? 5000,
+        eligibleVoters,
+        currentRequired,
+        newRequired,
+        status: claim.status,
+      };
+    }));
+
+    return {
+      totalActiveClaims: activeClaims.length,
+      affectedClaims: impacted.filter(i => i.currentRequired !== i.newRequired),
+      quorumBps: targetBps,
+    };
+  }
 
   /**
    * GET /admin/stats
