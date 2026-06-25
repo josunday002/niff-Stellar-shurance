@@ -292,6 +292,20 @@ model FaqStat {
   @@map("faq_stats")
 }
 
+/// Admin-managed FAQ entries shown on the public support page.
+model FaqItem {
+  id           String   @id @default(uuid())
+  question     String
+  answer       String
+  category     String   @default("General")
+  displayOrder Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([displayOrder])
+  @@map("faq_items")
+}
+
 /// Tenant provisioning configuration.
 model Tenant {
   id          String   @id @default(uuid())

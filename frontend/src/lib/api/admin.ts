@@ -73,6 +73,20 @@ export interface BulkUpdateResult {
   updated: number
 }
 
+export interface AllowedAsset {
+  id: string
+  contractId: string
+  symbol: string
+  decimals: number
+  isAllowed: boolean
+}
+
+export interface AddAssetParams {
+  contractId: string
+  symbol: string
+  decimals: number
+}
+
 // ── API calls ──────────────────────────────────────────────────────────────
 
 export const adminApi = {
@@ -141,5 +155,28 @@ export const adminApi = {
       method: 'POST',
       headers: authHeaders(jwt),
       body: JSON.stringify({ claimIds, status, dryRun }),
+    }),
+
+  listAssets: (jwt: string) =>
+    apiFetch<AllowedAsset[]>(`${base()}/assets`, { headers: authHeaders(jwt) }),
+
+  addAsset: (jwt: string, params: AddAssetParams) =>
+    apiFetch<AllowedAsset>(`${base()}/assets`, {
+      method: 'POST',
+      headers: authHeaders(jwt),
+      body: JSON.stringify(params),
+    }),
+
+  setAssetAllowed: (jwt: string, id: string, isAllowed: boolean) =>
+    apiFetch<AllowedAsset>(`${base()}/assets/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      headers: authHeaders(jwt),
+      body: JSON.stringify({ isAllowed }),
+    }),
+
+  removeAsset: (jwt: string, id: string) =>
+    apiFetch<void>(`${base()}/assets/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: authHeaders(jwt),
     }),
 }

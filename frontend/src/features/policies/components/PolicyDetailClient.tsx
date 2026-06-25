@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Clock, FileText, Shield } from 'lucide-react'
 
+import { PolicyMetadataUriViewer } from '@/components/policies/PolicyMetadataUriViewer'
 import { useWallet } from '@/features/wallet'
 import { RenewModal } from './RenewModal'
 import { TerminateModal } from './TerminateModal'
@@ -14,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useToast } from '@/components/ui/use-toast'
 import { PrintButton } from '@/components/ui/print-button'
 import { getConfig } from '@/config/env'
-import { PolicyDtoSchema, type PolicyDto, type ClaimSummaryDto } from '../api'
+import { PolicyDtoSchema, type PolicyDto, type ClaimSummaryDto, fetchClaimCap, type ClaimCapDto } from '../api'
 
 interface PolicyDetailClientProps {
   initialPolicy: PolicyDto
@@ -22,9 +23,7 @@ interface PolicyDetailClientProps {
 }
 
 const LEDGER_CLOSE_SECONDS = 5
-const RENEWAL_WINDOW_LEDGERS = 30 * 24 * 60 * 60 / LEDGER_CLOSE_SECONDS
-// Must match contracts/niffyinsure/src/ledger.rs DEFAULT_GRACE_PERIOD_LEDGERS = 17_280 (~1 day)
-const DEFAULT_GRACE_PERIOD_LEDGERS = 17_280
+const RENEWAL_WINDOW_LEDGERS = (30 * 24 * 60 * 60) / LEDGER_CLOSE_SECONDS
 
 function formatStroopsToXLM(stroops: string): string {
   const num = BigInt(stroops)
@@ -59,6 +58,86 @@ async function fetchPolicy(policyId: string): Promise<PolicyDto> {
   const parsed = PolicyDtoSchema.safeParse(data)
   if (!parsed.success) throw new Error('Invalid policy data')
   return parsed.data
+}
+
+function ClaimCapCard({ policyId }: { policyId: string }) {
+  const { data, isLoading, isError } = useQuery<ClaimCapDto>({
+    queryKey: ['policy-claim-cap', policyId],
+    queryFn: ({ signal }) => fetchClaimCap(policyId, signal),
+    refetchInterval: 30000,
+    retry: false,
+  })
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader><CardTitle className="flex items-center gap-2"><AlertCircle className="h-5 w-5" />Claim Cap Usage</CardTitle></CardHeader>
+        <CardContent><p className="text-sm text-gray-500">Loading claim cap data…</p></CardContent>
+      </Card>
+    )
+  }
+
+  if (isError || !data) return null
+
+  const cap = BigInt(data.rolling_cap)
+  const used = BigInt(data.claimed_in_window)
+  const pct = cap === 0n ? 0 : Number((used * 100n) / cap)
+  const resetSeconds = data.window_ledgers_remaining * LEDGER_CLOSE_SECONDS
+  const resetDays = Math.floor(resetSeconds / 86400)
+  const resetHours = Math.floor((resetSeconds % 86400) / 3600)
+
+  const barColor =
+    pct >= 90 ? '#ef4444' : pct >= 70 ? '#eab308' : undefined
+
+  const capXlm = (Number(cap) / 10_000_000).toFixed(2)
+  const usedXlm = (Number(used) / 10_000_000).toFixed(2)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <AlertCircle className="h-5 w-5" />
+          Rolling Claim Cap
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-gray-500">Claimed this window</span>
+          <span className="font-mono font-medium">
+            {usedXlm} / {capXlm} XLM
+          </span>
+        </div>
+        <div
+          role="progressbar"
+          aria-valuenow={pct}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${pct.toFixed(1)}% of rolling claim cap used`}
+          className="relative h-3 w-full overflow-hidden rounded-full bg-secondary"
+        >
+          <div
+            className="h-full transition-all"
+            style={{ width: `${pct}%`, backgroundColor: barColor }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-xs text-gray-500">
+          <span>{pct.toFixed(1)}% used</span>
+          <span>
+            Resets in{' '}
+            {resetDays > 0
+              ? `${resetDays}d ${resetHours}h`
+              : `${resetHours}h`}{' '}
+            <span className="text-gray-400">(ledger #{data.window_reset_ledger.toLocaleString()})</span>
+          </span>
+        </div>
+        {pct >= 90 && (
+          <p className="text-xs text-red-600 font-medium" role="alert">
+            Cap nearly exhausted — new claims may be rejected until the window resets.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
 }
 
 export function PolicyDetailClient({ initialPolicy, policyId }: PolicyDetailClientProps) {
@@ -135,6 +214,13 @@ export function PolicyDetailClient({ initialPolicy, policyId }: PolicyDetailClie
         </CardContent>
       </Card>
 
+      {policy.metadata_uri && (
+        <PolicyMetadataUriViewer
+          metadataUri={policy.metadata_uri}
+          termsHash={policy.terms_hash}
+        />
+      )}
+
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><Clock className="h-5 w-5" />Expiry Countdown</CardTitle></CardHeader>
         <CardContent className="space-y-3">
@@ -172,6 +258,8 @@ export function PolicyDetailClient({ initialPolicy, policyId }: PolicyDetailClie
           )}
         </CardContent>
       </Card>
+
+      <ClaimCapCard policyId={policyId} />
 
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><FileText className="h-5 w-5" />Linked Claims</CardTitle></CardHeader>
