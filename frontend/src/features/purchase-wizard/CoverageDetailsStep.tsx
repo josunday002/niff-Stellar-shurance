@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
 import { QuoteFormSchema, type QuoteFormData } from '@/lib/schemas/quote'
 import { useWallet } from '@/features/wallet'
+import { RegionCombobox } from '@/components/ui/region-combobox'
 
 interface Props {
   defaultValues: Partial<QuoteFormData>
@@ -87,17 +88,11 @@ export function CoverageDetailsStep({ defaultValues, onNext, onChange }: Props) 
 
       <div className="space-y-1">
         <Label htmlFor="region">Region Risk Tier</Label>
-        <select
-          id="region"
-          className={`w-full h-11 rounded-md border bg-background px-3 py-2 text-base focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${errors.region ? 'border-destructive' : 'border-input'}`}
-          {...register('region')}
-        >
-          <option value="">Select a region…</option>
-          <option value="Low">Low Risk</option>
-          <option value="Medium">Medium Risk</option>
-          <option value="High">High Risk</option>
-        </select>
-        <FieldError message={errors.region?.message} />
+        <RegionCombobox
+          value={watch('region')}
+          onChange={(val) => setValue('region', val as QuoteFormData['region'], { shouldValidate: true })}
+          error={errors.region?.message}
+        />
       </div>
 
       <div className="space-y-1">
